@@ -1,0 +1,46 @@
+{
+  "name": "pi-envoy",
+  "version": "0.1.0",
+  "description": "Intelligent subagent delegation for the pi coding agent: background spawn, wait-on-one, bidirectional messaging, recursive subagents with git worktree isolation, inter-agent bus, contracts, and an audit/reputation ledger — modeled on Tomašev, Franklin & Osindero, \"Intelligent AI Delegation\" (arXiv:2602.11865).",
+  "type": "module",
+  "files": [
+    "src",
+    "agents",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "subagents",
+    "delegation",
+    "orchestration",
+    "worktrees",
+    "agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jmnargi/pi-envoy.git"
+  },
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "typebox": "1.3.7"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@types/bun": "^1.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

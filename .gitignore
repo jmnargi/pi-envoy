@@ -1,0 +1,8 @@
+node_modules/
+
+# dev / validation artifacts
+test/fixtures/stub-requests.jsonl
+
+# os / editors
+.DS_Store
+*.log
