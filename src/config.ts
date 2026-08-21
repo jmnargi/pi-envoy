@@ -31,6 +31,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 	defaultWorktree: false,
 	killChildrenOnShutdown: true,
 	keepRunningChildrenWorktrees: true,
+	pushInterject: true,
 };
 
 /** Test seam — overrides getDataDir(). */
@@ -74,6 +75,7 @@ export function readConfig(dataDir: string): PluginConfig {
 	if (bool("ALLOWVERIFY") !== undefined) config.allowVerify = bool("ALLOWVERIFY")!;
 	if (bool("KILLONSHUTDOWN") !== undefined) config.killChildrenOnShutdown = bool("KILLONSHUTDOWN")!;
 	if (bool("DEFAULTWORKTREE") !== undefined) config.defaultWorktree = bool("DEFAULTWORKTREE")!;
+	if (bool("PUSHINTERJECT") !== undefined) config.pushInterject = bool("PUSHINTERJECT")!;
 
 	return config;
 }

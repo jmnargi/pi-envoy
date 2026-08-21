@@ -96,7 +96,7 @@ which yields `subagent_spawn { wait: false }` → `subagent_wait { ids: [...] }`
 | `subagent_wait` | **The wait-on-one primitive.** Blocks until the listed children settle (or the timeout fires); `all: false` returns on the first to settle. |
 | `subagent_status` | Registry summary, or one child's full record (use `all: false`-style polling). |
 | `subagent_messages` | Read the bus: a child's OUTBOX (progress/checkpoints) or your own inbox (steering/questions). Optional `since` (epoch ms) and `kind` filters. |
-| `subagent_send` | Deliver a message to a child's inbox (the child is instructed to read it at the start of every work step). |
+| `subagent_send` | Deliver a message to a child; it is injected into the child's conversation as a user message right after its current step (no polling needed). |
 | `subagent_post` | Broadcast to the bus: `main`, `parent`, or the shared `group` channel — inter-subagent and parent/child communication. |
 | `subagent_reputation` | Aggregate per-agent outcomes from the audit ledger (success rate, median duration, cost). |
 | `subagent_cancel` | Terminate a running/queued child (SIGTERM → SIGKILL), respecting worktree-keep policy. |
@@ -174,7 +174,7 @@ contains:
 - **Verification** — the `verify` command the delegator will run afterwards (§4.8);
 - **Reporting** — cadence (`none` / `on-checkpoint` / `turn`), the exact
   `echo '{"ts":…,"from":…,"to":"parent","kind":"checkpoint","text":"…"}' >> OUTBOX`
-  template, inbox-polling instructions, and the group/main channel paths (§4.2/§4.5);
+  template, push-delivered messages (injected as user messages mid-run), and the group/main channel paths (§4.2/§4.5);
 - **Budget and deadline** — optional hard timeout and advisory cost (§4.3, §4.4).
 
 ## Data layout
@@ -206,6 +206,7 @@ contains:
 | `defaultWorktree` / `PI_ENVOY_DEFAULTWORKTREE` | false | Isolate every child in a worktree by default |
 | `killChildrenOnShutdown` / `PI_ENVOY_KILLONSHUTDOWN` | true | Terminate running children on `session_shutdown` |
 | `keepRunningChildrenWorktrees` | true | Never auto-remove worktrees while children run |
+| `pushInterject` / `PI_ENVOY_PUSHINTERJECT` | true | Inject inbound messages into the agent as user messages immediately (steer delivery) |
 | `PI_ENVOY_DISABLED` | unset | `"1"` disables the extension entirely |
 
 ## Agent profiles

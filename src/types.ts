@@ -256,6 +256,8 @@ export interface PluginConfig {
 	killChildrenOnShutdown: boolean;
 	/** Suppress worktree auto-cleanup while children run (safety). */
 	keepRunningChildrenWorktrees: boolean;
+	/** Interject inbox messages into the agent as user messages immediately (no polling). */
+	pushInterject: boolean;
 }
 
 // ---------------------------------------------------------------------------

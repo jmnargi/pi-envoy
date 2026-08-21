@@ -31,6 +31,7 @@ import { createWorktree, mergeBack, prune, removeWorktree } from "./worktrees.ts
 import { buildContractText, runVerify, writeContractFile } from "./contract.ts";
 import { type SpawnedChild, spawnChild } from "./spawn.ts";
 import { discoverAgents } from "./agents.ts";
+import { INTERJECT_POLL_MS, formatInjectedMessage, injectableKind, readNewInbox } from "./interject.ts";
 import type {
 	AgentProfile,
 	Attestation,
@@ -219,6 +220,45 @@ export default function (pi: ExtensionAPI): void {
 	const dataDir = getDataDir();
 	const config = readConfig(dataDir);
 	const ctx: ParentContext = parentContextFromEnv(dataDir);
+
+	let stopInterject: (() => void) | undefined = undefined;
+
+	// Named cast: pi's ExtensionAPI has no public logger field; treat any present logger as optional.
+	const piWithLogger = pi as { logger?: { warn?: (msg: string) => void } };
+	const logWarn = (msg: string): void => {
+		if (piWithLogger.logger?.warn) piWithLogger.logger.warn(msg);
+		else console.error(msg);
+	};
+
+	/** Deliver an inbox message into the agent's conversation as a user message (§4.5 push). */
+	const injectNow = (text: string): void => {
+		const send = pi.sendUserMessage.bind(pi) as unknown as (
+			content: string,
+			options: { deliverAs?: "steer" | "followUp" },
+		) => Promise<void>;
+		void send(text, { deliverAs: "steer" }).catch((err: unknown) => {
+			logWarn(`envoy interject failed: ${String(err)}`);
+		});
+	};
+
+	/** Watch this agent's own inbox and interject incoming messages immediately. */
+	const startInterjectWatcher = (): void => {
+		if (stopInterject || !config.pushInterject) return;
+		let cursor = 0;
+		const timer = setInterval(() => {
+			try {
+				const { messages, nextCursor } = readNewInbox(ctx.inbox, cursor);
+				cursor = nextCursor;
+				for (const m of messages) {
+					if (!injectableKind(m.kind)) continue;
+					injectNow(formatInjectedMessage(m));
+				}
+			} catch {
+				// never let a poll error escape the timer
+			}
+		}, INTERJECT_POLL_MS);
+		stopInterject = () => clearInterval(timer);
+	};
 
 	const entries = new Map<string, ChildEntry>();
 	const queue: ChildEntry[] = [];
@@ -1069,8 +1109,8 @@ export default function (pi: ExtensionAPI): void {
 		name: "subagent_send",
 		label: "Send to Subagent",
 		description: [
-			"Send a message to a specific subagent's inbox (delivered to the child's INBOX file; the child is instructed to read it at the start of each work step).",
-			"Use it to steer a running child, ask it a question, or announce information. The child must read its inbox for the message to take effect.",
+			"Send a message to a specific subagent. Delivery is instant: the child receives it as an injected user message right after its current step (no polling needed).",
+			"Use it to steer a running child, ask it a question, or announce information. The child does not need to poll: the message interjects automatically.",
 			"The id must match a subagent id (sa_ + 12 hex chars) from subagent_spawn/subagent_status.",
 		].join(" "),
 		parameters: Type.Object({
@@ -1277,12 +1317,17 @@ export default function (pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 
 	pi.on("session_start", (_event, eventCtx) => {
+		startInterjectWatcher();
 		if (ctx.id === null && eventCtx.hasUI) {
 			eventCtx.ui.notify("pi-envoy ready (depth 0)", "info");
 		}
 	});
 
 	pi.on("session_shutdown", () => {
+		if (stopInterject) {
+			stopInterject();
+			stopInterject = undefined;
+		}
 		if (config.killChildrenOnShutdown) {
 			for (const entry of entries.values()) {
 				if (IN_FLIGHT_STATES.includes(entry.state)) {

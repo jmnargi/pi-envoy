@@ -126,7 +126,7 @@ describe("buildContractText", () => {
 			expect(text).toContain(path.join(dir, "bus", "sa_child.out.jsonl"));
 			expect(text).toContain('"to": "parent"');
 			expect(text).toContain('"kind": "checkpoint"');
-			expect(text).toContain(`read your INBOX file ${inboxPath(dir, "sa_delegator")}`);
+			expect(text).toContain("Messages that arrived before you started are in " + inboxPath(dir, "sa_delegator"));
 			expect(text).toContain(`group channel ${groupPath(dir, "grp_demo")}`);
 			expect(text).toContain(`main via path ${mainInboxPath(dir)}`);
 			// Budget and deadline.
