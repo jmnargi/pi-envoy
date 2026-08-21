@@ -1,8 +1,8 @@
 # pi-envoy
 
-Intelligent subagent delegation for the **pi coding agent** (this is a plugin for
-[pi](https://github.com/earendil-works/pi) — the `@earendil-works/pi-coding-agent`
-CLI — **not** OMP).
+Intelligent subagent delegation for the **pi coding agent**: a plugin for
+[pi](https://github.com/earendil-works/pi) (the `@earendil-works/pi-coding-agent`
+CLI).
 
 `pi-envoy` turns pi into an orchestrator that can delegate work to isolated
 child `pi` processes with the properties you expect from a serious subagent
