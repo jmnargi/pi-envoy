@@ -21,7 +21,7 @@ The design follows the delegation framework of
 arXiv:2602.11865](https://arxiv.org/abs/2602.11865). The mapping of paper sections to
 plugin features is in [Principles](#principles-paper-mapping).
 
-**Status:** typechecked (`tsc --noEmit`), unit-tested (`bun test`, 62 tests), and
+**Status:** typechecked (`tsc --noEmit`), unit-tested (`bun test`, 76 tests), and
 **validated end-to-end against a real `pi` binary**: a live `pi` session loaded
 the extension, called `subagent_spawn`, spawned a real child `pi` process
 (isolated HOME + a local OpenAI-compatible stub as the provider), and returned a
@@ -101,7 +101,31 @@ which yields `subagent_spawn { wait: false }` → `subagent_wait { ids: [...] }`
 | `subagent_reputation` | Aggregate per-agent outcomes from the audit ledger (success rate, median duration, cost). |
 | `subagent_cancel` | Terminate a running/queued child (SIGTERM → SIGKILL), respecting worktree-keep policy. |
 | `subagent_cleanup` | Remove finished worktrees, delete contract temp files, prune old bus files (never the ledger). |
-Commands: `/envoy` (status table), `/envoy-cleanup` (prune).
+Commands: `/envoy` (live dashboard overlay), `/envoy-cleanup` (prune).
+
+## Live UI
+
+Watching subagents run is a first-class part of the plugin in the pi TUI:
+
+- **Footer status** (`ctx.ui.setStatus`): a compact `envoy 2 running ·
+  1 queued · $0.014` line that updates on every lifecycle event while
+  children are in flight.
+- **Widget above the editor** (`ctx.ui.setWidget`): the most recent
+  running/queued/finished children with age and running cost, refreshed once
+  per second while anything is busy and cleared on `session_shutdown`.
+- **`/envoy` live dashboard** (`ctx.ui.custom` overlay): lists RUNNING /
+  QUEUED / FINISHED children with agent, age, cost and summary. Keys: ↑/↓
+  select a child · enter to view its bus output + final summary · esc close.
+  The overlay refreshes every second while open.
+- **Tool-call rendering** (`renderCall`/`renderResult`): every `subagent_*`
+  call renders as a compact `envoy spawn worker "objective…"`-style row with
+  a themed result line (success/error, truncated), instead of raw JSON.
+
+The UI is best-effort: guarded on `ctx.hasUI`, falls back to a plain
+notification when the TUI is unavailable (`-p`/JSON/RPC), and shows
+`envoy idle` when no children exist. All rendering follows pi's documented
+TUI extension API (`setStatus`, `setWidget`, `ui.custom`, `renderCall`); the
+pure data shaping lives in `src/ui.ts` and is unit-tested.
 
 ## How the model learns about this plugin
 
@@ -308,7 +332,7 @@ that launched it ([pi docs](packages/coding-agent/docs/containerization.md)).
 ```bash
 npm install && npm i -D @types/bun
 npx tsc --noEmit      # strict typecheck
-bun test              # 62 unit tests (bus, ledger, contract, worktrees, spawn, interject, factory surface)
+bun test              # 76 unit tests (bus, ledger, contract, worktrees, spawn, interject, factory surface, ui)
 ```
 
 Tests use hermetic fakes (a `fake-pi` child emitting JSON-lines events; real
@@ -339,15 +363,21 @@ call-driven (tool handlers, active-wait timers that are always cleared).
   agent is. The 750 ms interval is a constant in `src/interject.ts`
   (`INTERJECT_POLL_MS`); adjust there if you want a different cadence — the
   CPU savings are negligible either way.
+- **Live UI is idle-while-idle.** The TUI widget/dashboard refresh once per
+  second only while at least one child is in flight; the timer stops when the
+  registry empties and is cleared on `session_shutdown`.
 
 ## Limitations
 
 - **Validated end-to-end against a real `pi` binary** with a local stub
   provider (see [Validation](#validation)); a live run with your own provider
   credentials is still recommended before trusting the plugin with real work.
-- The E2E run did not exercise live inter-child bus traffic, live message
-  interjection, or TUI rendering; those paths are unit-tested only
-  (interjection follows pi's documented `deliverAs: "steer"` semantics).
+- The E2E run did not exercise live inter-child bus traffic or live message
+  interjection mid-turn; those paths are unit-tested only (interjection
+  follows pi's documented `deliverAs: "steer"` semantics). TUI rendering was
+  exercised headlessly: an automated PTY session rendered the widget, footer
+  status and `/envoy` dashboard overlay (verified via `PI_TUI_WRITE_LOG`) and
+  exited cleanly.
 - Children are spawned with `--mode json -p --no-session`: they have no
   interactive UI, and their context files/skills follow pi defaults
   (`inheritContext: false` opts out of repo context files).

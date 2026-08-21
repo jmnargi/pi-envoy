@@ -1,0 +1,109 @@
+/**
+ * Unit tests for the pure dashboard/formatting helpers (src/ui.ts).
+ */
+
+import { describe, expect, test } from "bun:test";
+
+import {
+	dashboardData,
+	fmtAge,
+	fmtCost,
+	fmtShortId,
+	stateToken,
+	truncate,
+	type EntryView,
+} from "../src/ui.ts";
+
+const view = (over: Partial<EntryView>): EntryView => ({
+	id: "sa_2fc7ac2e5893",
+	agent: "worker",
+	state: "running",
+	queuedAt: 1000,
+	startedAt: 2000,
+	endedAt: 0,
+	usage: { cost: 0, durationMs: 0 },
+	summary: "",
+	outcome: null,
+	...over,
+});
+
+describe("fmtShortId", () => {
+	test("strips the sa_ prefix and shortens", () => {
+		expect(fmtShortId("sa_2fc7ac2e5893")).toBe("2fc7ac2e");
+	});
+	test("handles non-sa ids", () => {
+		expect(fmtShortId("main")).toBe("main");
+	});
+});
+
+describe("fmtAge", () => {
+	test("seconds, minutes, hours", () => {
+		expect(fmtAge(42_000)).toBe("42s");
+		expect(fmtAge(192_000)).toBe("3m12s");
+		expect(fmtAge(7_200_000)).toBe("2h0m");
+	});
+	test("invalid input renders a dash", () => {
+		expect(fmtAge(-5)).toBe("—");
+	});
+});
+
+describe("fmtCost", () => {
+	test("zero shows a dash", () => {
+		expect(fmtCost(0)).toBe("-");
+	});
+	test("small amounts keep four decimals", () => {
+		expect(fmtCost(0.00123)).toBe("$0.0012");
+	});
+	test("larger amounts round to three decimals", () => {
+		expect(fmtCost(0.012345)).toBe("$0.012");
+	});
+});
+
+describe("truncate", () => {
+	test("short text passes through", () => {
+		expect(truncate("hello", 10)).toBe("hello");
+	});
+	test("long text is clipped with an ellipsis", () => {
+		expect(truncate("abcdefghij", 5)).toBe("abcd…");
+	});
+});
+
+describe("stateToken", () => {
+	test("success states map to success", () => {
+		expect(stateToken("done")).toBe("success");
+		expect(stateToken("verified")).toBe("success");
+	});
+	test("failure/cancellation map to error/warning", () => {
+		expect(stateToken("failed")).toBe("error");
+		expect(stateToken("timeout")).toBe("error");
+		expect(stateToken("cancelled")).toBe("warning");
+	});
+	test("in-flight states map to accent", () => {
+		expect(stateToken("running")).toBe("accent");
+		expect(stateToken("queued")).toBe("accent");
+	});
+});
+
+describe("dashboardData", () => {
+	test("partitions running/queued/finished and sums cost", () => {
+		const d = dashboardData([
+			view({ id: "sa_aaaa1111", state: "running", startedAt: 10_000, usage: { cost: 0.001, durationMs: 0 } }),
+			view({ id: "sa_bbbb2222", state: "queued", queuedAt: 500, startedAt: 0 }),
+			view({ id: "sa_cccc3333", state: "done", startedAt: 100, endedAt: 500, outcome: "verified", usage: { cost: 0.004, durationMs: 400 }, summary: "ok" }),
+		]);
+		expect(d.totals).toEqual({ running: 1, queued: 1, finished: 1, costUsd: 0.005 });
+		expect(d.running[0]?.shortId).toBe("aaaa1111");
+		expect(d.running[0]?.ageMs).toBeGreaterThan(0);
+		expect(d.queued[0]?.agent).toBe("worker");
+		expect(d.finished[0]?.summary).toBe("ok");
+	});
+
+	test("finished rows are capped at the limit", () => {
+		const many = Array.from({ length: 12 }, (_, i) =>
+			view({ id: `sa_f${String(i).padStart(4, "0")}`, state: "done", startedAt: i * 100, endedAt: i * 100 + 50, outcome: "unverified" }),
+		);
+		const d = dashboardData(many, 5);
+		expect(d.finished).toHaveLength(5);
+		expect(d.totals.finished).toBe(12);
+	});
+});

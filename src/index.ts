@@ -32,6 +32,10 @@ import { buildContractText, runVerify, writeContractFile } from "./contract.ts";
 import { type SpawnedChild, spawnChild } from "./spawn.ts";
 import { discoverAgents } from "./agents.ts";
 import { INTERJECT_POLL_MS, formatInjectedMessage, injectableKind, readNewInbox } from "./interject.ts";
+import { Text, type Component } from "@earendil-works/pi-tui";
+
+import { makeDashboardComponent, type DashboardDeps, type ThemeLike } from "./dashboard.ts";
+import { dashboardData, fmtAge, fmtCost, fmtShortId, truncate, type EntryView } from "./ui.ts";
 import type {
 	AgentProfile,
 	Attestation,
@@ -213,6 +217,39 @@ function formatResultText(result: ToolChildResult): string {
 	parts.push(`usage: ${formatUsageOneLiner(result.usage, undefined)}`);
 	return parts.join(" \u00b7 ");
 }
+function envoyTextOf(result: { content?: Array<{ type: string; text?: string }> }): string {
+	for (const part of result.content ?? []) {
+		if (part.type === "text" && typeof part.text === "string") return part.text;
+	}
+	return "";
+}
+
+function argStr(args: unknown, key: string): string {
+	const v = (args as Record<string, unknown>)[key];
+	return typeof v === "string" ? v : "";
+}
+
+function argStrs(args: unknown, key: string): string[] {
+	const v = (args as Record<string, unknown>)[key];
+	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+function renderCallLine(theme: ThemeLike, context: { lastComponent?: Component }, content: string): Text {
+	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	text.setText(content);
+	return text;
+}
+
+function renderResultLine(
+	result: { content?: Array<{ type: string; text?: string }> },
+	theme: ThemeLike,
+	context: { lastComponent?: Component; isError?: boolean },
+): Text {
+	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	const body = truncate(envoyTextOf(result).replace(/\s+/g, " ").trim(), 150) || "done";
+	text.setText(theme.fg(context.isError ? "error" : "success", body));
+	return text;
+}
 
 export default function (pi: ExtensionAPI): void {
 	if (process.env.PI_ENVOY_DISABLED === "1") return;
@@ -258,6 +295,71 @@ export default function (pi: ExtensionAPI): void {
 			}
 		}, INTERJECT_POLL_MS);
 		stopInterject = () => clearInterval(timer);
+	};
+
+	let envoyTicker: NodeJS.Timeout | undefined;
+	let uiHost:
+		| {
+				mode?: string;
+				hasUI: boolean;
+				ui: {
+					setStatus(key: string, text: string | undefined): void;
+					setWidget(key: string, content: string[] | undefined): void;
+				};
+		  }
+		| undefined = undefined;
+
+	const entryView = (e: ChildEntry): EntryView => ({
+		id: e.id,
+		agent: e.profileName,
+		state: e.state,
+		queuedAt: e.queuedAt,
+		startedAt: e.startedAt,
+		endedAt: e.endedAt,
+		usage: { cost: e.usage.cost, durationMs: e.usage.durationMs },
+		summary: e.summary,
+		outcome: e.attestation ? e.attestation.outcome : null,
+	});
+
+	const boardDeps = (): DashboardDeps => ({
+		entries: () => Array.from(entries.values()).map(entryView),
+		readOutbox: (id) => readMessages(outboxPath(id)),
+		summaryOf: (id) => entries.get(id)?.summary ?? "",
+	});
+
+	/** Push the current registry snapshot into the TUI footer status + widget. */
+	const updateEnvoyUI = (): void => {
+		if (!uiHost?.hasUI) return;
+		try {
+			const d = dashboardData(Array.from(entries.values()).map(entryView));
+			uiHost.ui.setStatus(
+				"envoy",
+				`envoy ${d.totals.running} running · ${d.totals.queued} queued · ${fmtCost(d.totals.costUsd)}`,
+			);
+			const lines: string[] = [];
+			for (const r of d.running.slice(0, 5)) lines.push(`● ${r.shortId} ${r.agent} ${fmtAge(r.ageMs)} ${fmtCost(r.cost)}`);
+			for (const r of d.queued.slice(0, 3)) lines.push(`· ${r.shortId} ${r.agent} queued`);
+			if (d.finished.length > 0) {
+				const last = d.finished[0]!;
+				lines.push(`✓ ${last.shortId} ${last.state} ${fmtAge(last.ageMs)} ${fmtCost(last.cost)}`);
+			}
+			uiHost.ui.setWidget("envoy", lines.length > 0 ? lines : ["envoy idle"]);
+		} catch {
+			// UI surface unavailable (print/rpc/teardown) — best-effort only
+		}
+		const busy = Array.from(entries.values()).some((e) => IN_FLIGHT_STATES.includes(e.state));
+		if (busy && envoyTicker === undefined) envoyTicker = setInterval(updateEnvoyUI, 1000);
+		else if (!busy && envoyTicker !== undefined) {
+			clearInterval(envoyTicker);
+			envoyTicker = undefined;
+		}
+	};
+
+	const stopEnvoyTicker = (): void => {
+		if (envoyTicker !== undefined) {
+			clearInterval(envoyTicker);
+			envoyTicker = undefined;
+		}
 	};
 
 	const entries = new Map<string, ChildEntry>();
@@ -395,6 +497,7 @@ export default function (pi: ExtensionAPI): void {
 
 	async function startEntry(entry: ChildEntry): Promise<void> {
 		entry.startedAt = Date.now();
+		updateEnvoyUI();
 		try {
 			const runner = spawnChild({
 				id: entry.id,
@@ -447,6 +550,7 @@ export default function (pi: ExtensionAPI): void {
 				entry.usage.contextTokens = u.totalTokens;
 			}
 		}
+		updateEnvoyUI();
 		if (typeof msg.model === "string") entry.model = msg.model;
 		if (typeof msg.stopReason === "string") entry.stopReason = msg.stopReason;
 		if (typeof msg.errorMessage === "string") entry.error = msg.errorMessage;
@@ -587,6 +691,7 @@ export default function (pi: ExtensionAPI): void {
 		} catch {
 			// ledger append is best-effort; a full audit trail must not block delivery
 		}
+		updateEnvoyUI();
 
 		// §4.7 worktree finalization: keep per policy, merge back on success,
 		// remove otherwise; prune leftovers either way.
@@ -829,6 +934,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_spawn",
+		renderCall(args, theme, context) {
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy spawn"))} ${theme.fg("accent", argStr(args, "agent"))} ${theme.fg("dim", truncate(argStr(args, "objective"), 64))}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Spawn Subagent",
 		promptSnippet: "Delegate substantial work to an isolated pi subagent (contract first)",
 		promptGuidelines: [
@@ -900,6 +1011,7 @@ export default function (pi: ExtensionAPI): void {
 			const entry = makeEntry(id, prepared);
 			entries.set(id, entry);
 			queue.push(entry);
+			updateEnvoyUI();
 			pump();
 			if (params.wait) {
 				onUpdate?.({
@@ -929,6 +1041,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_wait",
+		renderCall(args, theme, context) {
+			const n = argStrs(args, "ids").length || 1;
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy wait"))} ${theme.fg("muted", `${n} subagent${n === 1 ? "" : "s"}`)}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Wait on Subagents",
 		promptSnippet: "Wait for spawned subagents and collect their results",
 		description: [
@@ -1032,6 +1151,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_status",
+		renderCall(args, theme, context) {
+			const id = argStr(args, "id");
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy status"))} ${theme.fg("muted", id ? fmtShortId(id) : "overview")}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Subagent Status",
 		promptSnippet: "List spawned subagents and their current state",
 		description: [
@@ -1068,6 +1194,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_messages",
+		renderCall(args, theme, context) {
+			const id = argStr(args, "id");
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy messages"))} ${theme.fg("muted", id ? fmtShortId(id) : "bus")}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Subagent Messages",
 		promptSnippet: "Read a subagent's progress and message stream",
 		description: [
@@ -1117,6 +1250,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_send",
+		renderCall(args, theme, context) {
+			const to = argStr(args, "to") || argStr(args, "id");
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy send"))} ${theme.fg("accent", "→ " + to)} ${theme.fg("dim", truncate(argStr(args, "text"), 44))}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Send to Subagent",
 		promptSnippet: "Send a message to a subagent (delivered instantly as an injected user message)",
 		promptGuidelines: [
@@ -1163,6 +1303,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_post",
+		renderCall(args, theme, context) {
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy post"))} ${theme.fg("accent", "→ " + argStr(args, "to"))}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Post to Bus",
 		promptSnippet: "Post a message to a bus channel (group, parent, main)",
 		description: [
@@ -1205,6 +1351,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_reputation",
+		renderCall(args, theme, context) {
+			const agent = argStr(args, "agent");
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy reputation"))} ${theme.fg("muted", agent)}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Subagent Reputation",
 		promptSnippet: "Aggregate ledger outcomes into per-agent reputation",
 		description: [
@@ -1241,6 +1394,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_cancel",
+		renderCall(args, theme, context) {
+			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy cancel"))} ${theme.fg("muted", fmtShortId(argStr(args, "id")))}`);
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Cancel Subagent",
 		promptSnippet: "Terminate a running subagent",
 		description: [
@@ -1259,6 +1418,7 @@ export default function (pi: ExtensionAPI): void {
 			if (entry.settled) throw new Error(`subagent ${params.id} already ${entry.state}`);
 			if (params.keepWorktree !== undefined) entry.keepWorktreeOverride = params.keepWorktree;
 			entry.killReason = "cancelled";
+			updateEnvoyUI();
 
 			if (entry.state === "queued") {
 				const idx = queue.indexOf(entry);
@@ -1284,6 +1444,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_cleanup",
+		renderCall(args, theme, context) {
+			return renderCallLine(theme, context, theme.fg("toolTitle", theme.bold("envoy cleanup")));
+		},
+		renderResult(result, options, theme, context) {
+			return renderResultLine(result, theme, context);
+		},
 		label: "Subagent Cleanup",
 		promptSnippet: "Prune finished worktrees, tmp contracts, and old bus files",
 		description: [
@@ -1314,8 +1480,17 @@ export default function (pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 
 	pi.registerCommand("envoy", {
-		description: "List running/finished subagents",
+		description: "Open the live subagent dashboard (status, output, cost)",
 		handler: async (_args, cmdCtx) => {
+			if (cmdCtx.mode === "tui") {
+				uiHost = cmdCtx;
+				updateEnvoyUI();
+				await cmdCtx.ui.custom<null>(
+					(tui, theme, _keybindings, done) => makeDashboardComponent(boardDeps(), tui, theme as ThemeLike, () => done(null)),
+					{ overlay: true, overlayOptions: { width: "68%", anchor: "center", margin: 1 } },
+				);
+				return;
+			}
 			const overview = await buildRegistryOverview();
 			if (cmdCtx.hasUI) cmdCtx.ui.notify(overview.text, "info");
 		},
@@ -1336,6 +1511,8 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, eventCtx) => {
 		startInterjectWatcher();
+		uiHost = eventCtx;
+		updateEnvoyUI();
 		if (ctx.id === null && eventCtx.hasUI) {
 			eventCtx.ui.notify("pi-envoy ready (depth 0)", "info");
 		}
@@ -1346,6 +1523,10 @@ export default function (pi: ExtensionAPI): void {
 			stopInterject();
 			stopInterject = undefined;
 		}
+		stopEnvoyTicker();
+		uiHost?.ui.setStatus("envoy", undefined);
+		uiHost?.ui.setWidget("envoy", undefined);
+		uiHost = undefined;
 		if (config.killChildrenOnShutdown) {
 			for (const entry of entries.values()) {
 				if (IN_FLIGHT_STATES.includes(entry.state)) {
