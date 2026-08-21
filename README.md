@@ -280,19 +280,46 @@ that launched it ([pi docs](packages/coding-agent/docs/containerization.md)).
 ```bash
 npm install && npm i -D @types/bun
 npx tsc --noEmit      # strict typecheck
-bun test              # 44 unit tests (bus, ledger, contract, worktrees, spawn)
+bun test              # 57 unit tests (bus, ledger, contract, worktrees, spawn, interject)
 ```
 
 Tests use hermetic fakes (a `fake-pi` child emitting JSON-lines events; real
 `git` in temp repos for worktree cases) — no pi install or API keys needed.
+
+## Performance
+
+The only recurring background work in any process running this plugin is the
+inbox watcher that delivers interjected messages — one poll every 750 ms.
+Everything else is one-time at startup (config read, agent discovery) or
+call-driven (tool handlers, active-wait timers that are always cleared).
+`PI_ENVOY_DISABLED=1` removes even that (early return before any setup).
+
+- **Poll cost is flat, not growing.** The watcher reads only bytes appended
+  since the last poll (byte-offset cursor), so a poll is ~3.3 µs whether the
+  inbox has 0 or 5 000 lines — ~0.4 ms of CPU per process per day at the
+  750 ms cadence. (The previous whole-file read slowed linearly: 225 µs/poll
+  at 5 000 lines.) Reproduce with `bun run bench/poll.ts`.
+- **End-to-end**: a full delegation round-trip (spawn a child pi process,
+  child answers, attest) with the plugin enabled runs ≈ 20 ms slower than the
+  same prompt without it — ≈ 2% of the ≈ 860 ms baseline (5 runs each, stub
+  provider, Ryzen 5 3600 / Linux). Peak RSS was +4.5 MB (≈ 158 → ≈ 162 MB).
+- **No leaked timers.** The watcher stops on `session_shutdown`; active-wait
+  heartbeat timers are cleared in `finally`; benchmarked runs exit cleanly,
+  so a session that ends does not keep the host process alive.
+- **Latency is bounded, not load-based.** Delivery is push-style: a message
+  lands within one 750 ms poll of being written, regardless of how active the
+  agent is. The 750 ms interval is a constant in `src/interject.ts`
+  (`INTERJECT_POLL_MS`); adjust there if you want a different cadence — the
+  CPU savings are negligible either way.
 
 ## Limitations
 
 - **Validated end-to-end against a real `pi` binary** with a local stub
   provider (see [Validation](#validation)); a live run with your own provider
   credentials is still recommended before trusting the plugin with real work.
-- The E2E run did not exercise live inter-child bus traffic or TUI rendering;
-  those paths are unit-tested only.
+- The E2E run did not exercise live inter-child bus traffic, live message
+  interjection, or TUI rendering; those paths are unit-tested only
+  (interjection follows pi's documented `deliverAs: "steer"` semantics).
 - Children are spawned with `--mode json -p --no-session`: they have no
   interactive UI, and their context files/skills follow pi defaults
   (`inheritContext: false` opts out of repo context files).

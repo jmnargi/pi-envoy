@@ -80,27 +80,28 @@ describe("formatInjectedMessage", () => {
 });
 
 describe("readNewInbox", () => {
-	test("returns messages after the cursor and advances it", () => {
+	test("returns messages after the cursor and advances a byte cursor", () => {
 		const file = path.join(tmp, "in.jsonl");
-		fs.writeFileSync(
-			file,
-			[JSON.stringify(msg({ ts: 1, kind: "steer", text: "a" })), JSON.stringify(msg({ ts: 2, kind: "question", text: "b" }))].join("\n") + "\n",
-		);
+		const l1 = JSON.stringify(msg({ ts: 1, kind: "steer", text: "a" })) + "\n";
+		const l2 = JSON.stringify(msg({ ts: 2, kind: "question", text: "b" })) + "\n";
+		fs.writeFileSync(file, l1 + l2);
 		const first = readNewInbox(file, 0);
 		expect(first.messages.map((m) => m.text)).toEqual(["a", "b"]);
-		expect(first.nextCursor).toBe(2);
+		expect(first.nextCursor).toBe(Buffer.byteLength(l1 + l2));
 
 		const second = readNewInbox(file, first.nextCursor);
 		expect(second.messages).toHaveLength(0);
-		expect(second.nextCursor).toBe(2);
+		expect(second.nextCursor).toBe(first.nextCursor);
 	});
 
 	test("skips corrupt lines but still advances past them", () => {
 		const file = path.join(tmp, "in.jsonl");
-		fs.writeFileSync(file, "garbage\n" + JSON.stringify(msg({ text: "ok" })) + "\n");
+		const corrupt = "garbage\n";
+		const good = JSON.stringify(msg({ text: "ok" })) + "\n";
+		fs.writeFileSync(file, corrupt + good);
 		const r = readNewInbox(file, 0);
 		expect(r.messages.map((m) => m.text)).toEqual(["ok"]);
-		expect(r.nextCursor).toBe(2);
+		expect(r.nextCursor).toBe(Buffer.byteLength(corrupt + good));
 	});
 
 	test("missing file resets the cursor to 0", () => {
@@ -117,5 +118,33 @@ describe("readNewInbox", () => {
 		fs.appendFileSync(file, JSON.stringify(msg({ text: "second" })) + "\n");
 		const second = readNewInbox(file, first.nextCursor);
 		expect(second.messages.map((m) => m.text)).toEqual(["second"]);
+	});
+
+	test("a torn trailing line is held back until it completes", () => {
+		const file = path.join(tmp, "in.jsonl");
+		const complete = JSON.stringify(msg({ ts: 1, text: "whole" })) + "\n";
+		const partial = JSON.stringify(msg({ ts: 2, text: "sp" })).slice(0, 24); // no trailing newline
+		fs.writeFileSync(file, complete + partial);
+		const first = readNewInbox(file, 0);
+		expect(first.messages.map((m) => m.text)).toEqual(["whole"]);
+		expect(first.nextCursor).toBe(Buffer.byteLength(complete));
+
+		// the rest of the second line lands; the next poll delivers exactly it
+		fs.appendFileSync(file, JSON.stringify(msg({ ts: 2, text: "split" })).slice(24) + "\n");
+		const second = readNewInbox(file, first.nextCursor);
+		expect(second.messages.map((m) => m.text)).toEqual(["split"]);
+	});
+
+	test("a truncated or rotated file restarts from the top", () => {
+		const file = path.join(tmp, "in.jsonl");
+		fs.writeFileSync(file, JSON.stringify(msg({ text: "a longer original payload" })) + "\n");
+		const first = readNewInbox(file, 0);
+		expect(first.nextCursor).toBeGreaterThan(0);
+
+		// rotation: smaller file, fresh content
+		fs.writeFileSync(file, JSON.stringify(msg({ text: "new" })) + "\n");
+		const second = readNewInbox(file, first.nextCursor);
+		expect(second.messages.map((m) => m.text)).toEqual(["new"]);
+		expect(second.nextCursor).toBeLessThan(first.nextCursor);
 	});
 });

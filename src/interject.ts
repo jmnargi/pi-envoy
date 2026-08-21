@@ -61,27 +61,52 @@ export function parseInboxLine(line: string): BusMessage | null {
 }
 
 /**
- * Read messages from an inbox file that are newer than `cursor` (a line
- * count). Returns the parsed messages and the new cursor (total line count).
+ * Read messages from an inbox file that are newer than `cursor` (a byte
+ * offset). Returns the parsed messages and the new cursor (byte offset of the
+ * end of the last complete line consumed).
+ *
+ * The read is incremental: only bytes after `cursor` are read, so a poll
+ * costs O(appended bytes), not O(file size) — the watcher stays cheap no
+ * matter how large a busy inbox grows.
+ *
  * A missing file (pruned/rotated) resets the cursor to 0 so a freshly created
- * inbox starts delivering again.
+ * inbox starts delivering again; a file that shrank below the cursor (truncate
+ * or rotate-to-smaller) is handled the same way.
+ *
+ * An in-flight append may leave a partial trailing line without a newline;
+ * it is not parsed yet and the cursor stays at its start, so the next poll
+ * picks it up complete — no message is lost or split.
  */
 export function readNewInbox(file: string, cursor: number): { messages: BusMessage[]; nextCursor: number } {
-	let raw: string;
+	let fd: number;
 	try {
-		raw = fs.readFileSync(file, "utf8");
+		fd = fs.openSync(file, "r");
 	} catch {
 		return { messages: [], nextCursor: 0 };
 	}
-	const lines = raw.split("\n");
-	// drop the empty element produced by a trailing newline, so cursors count real lines
-	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-	const total = lines.length;
-	if (total <= cursor) return { messages: [], nextCursor: cursor };
-	const messages: BusMessage[] = [];
-	for (const line of lines.slice(cursor)) {
-		const m = parseInboxLine(line);
-		if (m) messages.push(m);
+	try {
+		const size = fs.fstatSync(fd).size;
+		if (size < cursor) cursor = 0; // truncated or rotated
+		const length = size - cursor;
+		if (length <= 0) return { messages: [], nextCursor: cursor };
+		const buf = Buffer.allocUnsafe(length);
+		let got = 0;
+		while (got < length) {
+			const n = fs.readSync(fd, buf, got, length - got, cursor + got);
+			if (n <= 0) break;
+			got += n;
+		}
+		// Only advance past newline-terminated (complete) lines; a trailing
+		// fragment without "\n" is re-read together with its completion.
+		const lastNl = buf.lastIndexOf(0x0a);
+		if (lastNl < 0) return { messages: [], nextCursor: cursor };
+		const messages: BusMessage[] = [];
+		for (const line of buf.subarray(0, lastNl + 1).toString("utf8").split("\n")) {
+			const m = parseInboxLine(line);
+			if (m) messages.push(m);
+		}
+		return { messages, nextCursor: cursor + lastNl + 1 };
+	} finally {
+		fs.closeSync(fd);
 	}
-	return { messages, nextCursor: total };
 }
