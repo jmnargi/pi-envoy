@@ -120,8 +120,10 @@ Watching subagents run is a first-class part of the plugin in the pi TUI:
 - **`/envoy` live dashboard** (`ctx.ui.custom` overlay): lists RUNNING /
   QUEUED / FINISHED children by their **name** (the `name` you pass to
   `subagent_spawn`) with age, cost and summary. Keys: ↑/↓ select a child ·
-  enter to view its bus output + final summary · esc close. The overlay
-  refreshes every second while open.
+  **enter** view its bus output + final summary · **v** view the subagent's
+  own transcript (its actual messages, captured live) · **x** kill a
+  running/queued child (y/n confirm; recorded as "killed by user") · esc
+  close. The overlay refreshes every second while open.
 - **Custom message rendering** (`sendMessage` + `registerMessageRenderer`):
   when one agent messages another, the message is injected into the
   recipient's conversation as a **custom message** with its own TUI block —
@@ -131,6 +133,14 @@ Watching subagents run is a first-class part of the plugin in the pi TUI:
 - **Tool-call rendering** (`renderCall`/`renderResult`): every `subagent_*`
   call renders as a compact `envoy spawn <name> "<objective…>"` row with a
   themed result line (state badge, duration, cost), instead of raw JSON.
+- **Subagent transcripts** (`<dataDir>/bus/<id>.transcript.jsonl`): each
+  child's assistant/user messages are captured live as they happen, so you
+  can see exactly what a (possibly rogue) subagent is doing — viewable from
+  the dashboard with `v`.
+- **Kill attribution**: when a child is terminated by the user (dashboard
+  `x` or `subagent_cancel`), it's recorded as `killed by user`; `timed out`
+  and `killed by shutdown` are distinguished too — a user kill is never
+  reported as a failure.
 
 The UI is best-effort: guarded on `ctx.hasUI`, falls back to plain
 notifications when the TUI is unavailable (`-p`/JSON/RPC), and disappears
