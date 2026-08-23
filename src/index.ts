@@ -869,7 +869,7 @@ export default function (pi: ExtensionAPI): void {
 
 		const finalText = extractFinalText(entry.messages);
 		const parsed = parseFinalBlock(finalText);
-		entry.summary = parsed.summary;
+		entry.summary = parsed.summary || truncate(finalText.replace(/\s+/g, " ").trim(), 160);
 		entry.selfReport = parsed.selfReport;
 		entry.childrenAttest = parsed.children;
 
