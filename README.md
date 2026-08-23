@@ -126,6 +126,12 @@ Watching subagents run is a first-class part of the plugin in the pi TUI:
   + final summary · **v** view the child's transcript · **x** kill a
   running/queued child (y/n confirm; recorded as "killed by user") · esc
   close.
+
+> **Tip:** for a true full-terminal dashboard, set `"tuiMode": "fullscreen"`
+> in `~/.pi/agent/settings.json`. In pi's default "regular" mode, custom
+> components render inside the editor region (the lower part of the screen);
+> in fullscreen mode they take over the whole terminal via alt-screen.
+
 - **Custom message rendering** (`sendMessage` + `registerMessageRenderer`):
   when one agent messages another, the message is injected into the
   recipient's conversation as a **custom message** with its own TUI block —

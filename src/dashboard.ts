@@ -251,7 +251,28 @@ export function makeDashboardComponent(
 	return {
 		render(width: number): string[] {
 			const content = contentLines(Math.max(10, width - 2));
-			return frame(content, width);
+
+			// Fixed size: fill the terminal's height so the panel never re-sizes.
+			// The help line is pinned to the bottom; blank filler goes between
+			// content and footer.
+			let height = 24;
+			try {
+				const rows = tui.terminal?.rows;
+				if (typeof rows === "number" && Number.isFinite(rows) && rows > 4) {
+					height = Math.min(rows, Math.max(height, rows - 2));
+				}
+			} catch {
+				// terminal size unknown — fall back to content height
+			}
+
+			const filled = [...content];
+			const helpIdx = filled.length - 1;
+			while (filled.length < height - 2) {
+				filled.splice(helpIdx, 0, "");
+			}
+			if (filled.length > height - 2) filled.length = height - 2;
+
+			return frame(filled, width);
 		},
 
 		invalidate(): void {
