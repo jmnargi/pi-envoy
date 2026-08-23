@@ -483,9 +483,15 @@ export default function (pi: ExtensionAPI): void {
 		return path.join(dataDir, "bus", `${childId}.transcript.jsonl`);
 	}
 
+	/** Ensure the bus dir exists so transcript writes never fail on a clean slate. */
+	function ensureBusDir(): void {
+		fs.mkdirSync(path.join(dataDir, "bus"), { recursive: true });
+	}
+
 	/** Append one child message to its transcript file (best-effort, for live viewing). */
 	function appendTranscript(entry: ChildEntry, msg: PiMessage): void {
 		try {
+			ensureBusDir();
 			const text =
 				typeof msg.content === "string"
 					? msg.content
@@ -505,6 +511,7 @@ export default function (pi: ExtensionAPI): void {
 	function appendTranscriptLine(entry: ChildEntry, role: string, text: string): void {
 		try {
 			if (!text || text.trim() === "") return;
+			ensureBusDir();
 			const line = JSON.stringify({ role, ts: Date.now(), text: text.trim() });
 			fs.appendFileSync(transcriptPath(entry.id), line + "\n");
 		} catch {
