@@ -42,7 +42,7 @@ import {
 import { Text, type Component } from "@earendil-works/pi-tui";
 
 import { makeDashboardComponent, type DashboardDeps, type ThemeLike } from "./dashboard.ts";
-import { dashboardData, fmtAge, fmtCost, fmtShortId, stateToken, truncate, type EntryView } from "./ui.ts";
+import { dashboardData, fmtAge, fmtCost, fmtShortId, killLabel, stateToken, truncate, type EntryView } from "./ui.ts";
 import type {
 	AgentProfile,
 	Attestation,
@@ -145,8 +145,8 @@ interface ChildEntry {
 	childrenAttest: AttestationChild[];
 	verify: VerifyResult | null;
 	attestation: Attestation | null;
-	/** Reason recorded when this process kills the child (cancel/shutdown). */
-	killReason: string | null;
+	/** Reason recorded when this process kills the child (cancel/shutdown/timeout). */
+	killReason: "cancelled" | "shutdown" | "timeout" | null;
 	keepWorktreeOverride: boolean | undefined;
 	settled: boolean;
 	result: ToolChildResult | null;
@@ -219,6 +219,8 @@ function formatResultText(result: ToolChildResult): string {
 	const parts: string[] = [];
 	const label = result.name && result.name.trim() !== "" ? result.name : result.id;
 	parts.push(`${label} (${result.agent}): state=${result.state}`);
+	const killed = killLabel(result.killReason);
+	if (killed) parts.push(killed);
 	if (result.exitCode !== null) parts.push(`exit=${result.exitCode}`);
 	if (result.verify) {
 		parts.push(`verify=${result.verify.exitCode === 0 ? "passed" : `failed(${result.verify.exitCode})`}`);
@@ -349,13 +351,50 @@ export default function (pi: ExtensionAPI): void {
 		usage: { cost: e.usage.cost, durationMs: e.usage.durationMs },
 		summary: e.summary,
 		outcome: e.attestation ? e.attestation.outcome : null,
+		killReason: e.killReason,
 	});
 
 	const boardDeps = (): DashboardDeps => ({
 		entries: () => Array.from(entries.values()).map(entryView),
 		readOutbox: (id) => readMessages(outboxPath(id)),
+		readTranscript: async (id) => {
+			try {
+				const raw = fs.readFileSync(transcriptPath(id), "utf8");
+				return raw
+					.split("\n")
+					.filter((l) => l.trim() !== "")
+					.map((l) => {
+						try {
+							const p = JSON.parse(l) as { role?: string; ts?: number; text?: string };
+							return `[${p.role ?? "agent"}] ${p.text ?? ""}`;
+						} catch {
+							return l;
+						}
+					});
+			} catch {
+				return [];
+			}
+		},
 		summaryOf: (id) => entries.get(id)?.summary ?? "",
 		nameOf: (id) => entries.get(id)?.name ?? fmtShortId(id),
+		kill: (id) => {
+			const entry = entries.get(id);
+			if (!entry) return "unknown subagent";
+			if (entry.settled) return `already ${entry.state}`;
+			if (entry.killReason !== null) return `already ${entry.killReason}`;
+			entry.killReason = "cancelled";
+			updateEnvoyUI();
+			if (entry.state === "queued") {
+				const idx = queue.indexOf(entry);
+				if (idx >= 0) queue.splice(idx, 1);
+				active.delete(entry);
+				void finalizeChild(entry, null);
+				pump();
+				return "cancelled (was queued)";
+			}
+			entry.runner?.kill("cancelled");
+			return "cancellation requested";
+		},
 	});
 
 	/** Push the current registry snapshot into the TUI footer status + widget. */
@@ -403,6 +442,28 @@ export default function (pi: ExtensionAPI): void {
 	function outboxPath(childId: string): string {
 		const file = `${childId}.out.jsonl`;
 		return path.join(dataDir, "bus", file);
+	}
+
+	function transcriptPath(childId: string): string {
+		return path.join(dataDir, "bus", `${childId}.transcript.jsonl`);
+	}
+
+	/** Append one child message to its transcript file (best-effort, for live viewing). */
+	function appendTranscript(entry: ChildEntry, msg: PiMessage): void {
+		try {
+			const text =
+				typeof msg.content === "string"
+					? msg.content
+					: (msg.content ?? [])
+							.filter((p): p is { type: string; text: string } => typeof p === "object" && p !== null && typeof p.text === "string")
+							.map((p) => p.text)
+							.join("\n");
+			if (text.trim() === "") return;
+			const line = JSON.stringify({ role: msg.role ?? "assistant", ts: Date.now(), text });
+			fs.appendFileSync(transcriptPath(entry.id), line + "\n");
+		} catch {
+			// transcript capture is best-effort; never block the child on it
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -599,6 +660,7 @@ export default function (pi: ExtensionAPI): void {
 		if (!event.message) return;
 		if (event.type !== "message_end" && event.type !== "tool_result_end") return;
 		entry.messages.push(event.message);
+		appendTranscript(entry, event.message);
 		if (event.type === "tool_result_end") return;
 
 		const msg = event.message;
@@ -699,6 +761,7 @@ export default function (pi: ExtensionAPI): void {
 			agent: entry.profileName,
 			name: entry.name,
 			state: entry.state,
+			killReason: entry.killReason,
 			exitCode: null,
 			error: note,
 			usage: { ...entry.usage },
@@ -818,6 +881,7 @@ export default function (pi: ExtensionAPI): void {
 			agent: entry.profileName,
 			name: entry.name,
 			state: baseState,
+			killReason: entry.killReason,
 			exitCode: entry.exitCode,
 			stopReason: entry.stopReason,
 			error: entry.error,

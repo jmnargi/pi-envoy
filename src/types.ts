@@ -125,6 +125,8 @@ export interface ChildResult {
 	/** Human-readable name shown in the UI (spec.name, falls back to agent). */
 	name: string;
 	state: ChildState;
+	/** Who/what terminated the child: "cancelled" (user) | "shutdown" | "timeout" | null (ran to completion). */
+	killReason?: "cancelled" | "shutdown" | "timeout" | null;
 	exitCode: number | null;
 	stopReason?: string;
 	error?: string;

@@ -17,6 +17,7 @@ import {
 	fmtAge,
 	fmtCost,
 	fmtShortId,
+	killLabel,
 	stateToken,
 	truncate,
 	type DashboardRow,
@@ -32,10 +33,14 @@ export interface DashboardDeps {
 	/** Snapshot of the child registry (pure view). */
 	entries(): EntryView[];
 	readOutbox(id: string): Promise<BusMessage[]>;
+	/** Read a child's captured transcript lines (assistant/tool messages). */
+	readTranscript(id: string): Promise<string[]>;
 	/** Human summary/result line of one child. */
 	summaryOf(id: string): string;
 	/** Human-readable display name of one child. */
 	nameOf(id: string): string;
+	/** Request termination of a running/queued child ("cancelled" attribution). */
+	kill(id: string): string | null;
 }
 
 
@@ -56,7 +61,7 @@ export function makeDashboardComponent(
 	theme: ThemeLike,
 	done: () => void,
 ): Component & { dispose(): void } {
-	let mode: "list" | { id: string } = "list";
+	let mode: "list" | { id: string; view: "output" | "transcript" } | { confirmKill: string } = "list";
 	let selected = 0;
 	let sectionStarts = [0, 0, 0];
 	let outLines: string[] = [];
@@ -98,33 +103,47 @@ export function makeDashboardComponent(
 		return rows;
 	};
 
-	const openOutput = async (id: string): Promise<void> => {
-		mode = { id };
+	const loadView = async (id: string, view: "output" | "transcript"): Promise<void> => {
+		mode = { id, view };
 		outLoading = true;
 		outOffset = 0;
 		outLines = [];
 		refresh();
 		try {
-			const msgs = await deps.readOutbox(id);
-			const lines = msgs.map((m) => {
-				const t = new Date(m.ts).toISOString().slice(11, 19);
-				return `[${t} ${m.from}→${m.to} ${m.kind}] ${truncate(m.text, 160)}`;
-			});
-			outLines = lines.length > 0 ? lines : ["(no bus messages yet)"];
-			outLines.push("", "— final summary —", deps.summaryOf(id) || "(no summary)");
+			const lines =
+				view === "transcript"
+					? await deps.readTranscript(id)
+					: (await deps.readOutbox(id)).map((m) => {
+							const t = new Date(m.ts).toISOString().slice(11, 19);
+							return `[${t} ${m.from}→${m.to} ${m.kind}] ${truncate(m.text, 160)}`;
+						});
+			outLines = lines.length > 0 ? lines : [view === "transcript" ? "(no transcript yet)" : "(no bus messages yet)"];
+			if (view === "output") outLines.push("", "— final summary —", deps.summaryOf(id) || "(no summary)");
 		} catch {
-			outLines = ["(failed to read output)"];
+			outLines = ["(failed to read)"];
 		}
 		outLoading = false;
 		refresh();
 	};
 
+	const openOutput = (id: string): Promise<void> => loadView(id, "output");
+
 	return {
 		render(width: number): string[] {
 			if (mode !== "list") {
+				if ("confirmKill" in mode) {
+					const name = deps.nameOf(mode.confirmKill);
+					return [
+						truncate(
+							`${theme.fg("toolTitle", theme.bold("envoy · kill"))} ${theme.fg("dim", name)}  ${theme.fg("warning", "terminate this subagent? (y/n)")}`,
+							width,
+						),
+					];
+				}
 				const id = mode.id;
 				const name = deps.nameOf(id);
-				const head = `${theme.fg("toolTitle", theme.bold("envoy · output"))} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
+				const viewLabel = mode.view === "transcript" ? "transcript" : "output";
+				const head = `${theme.fg("toolTitle", theme.bold(`envoy · ${viewLabel}`))} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
 				const body = outLoading
 					? [theme.fg("muted", "loading…")]
 					: outLines.slice(outOffset, outOffset + 20).map((l) => truncate(l, width));
@@ -158,7 +177,15 @@ export function makeDashboardComponent(
 			section("QUEUED", rows.slice(runEnd, finStart), runEnd, "muted");
 			section("FINISHED", rows.slice(finStart), finStart, "dim");
 
-			out.push(theme.fg("dim", "↑/↓ select · enter output · esc close"));
+			// Kill attribution for the selected finished row, if any.
+			const selRow = rows[selected];
+			if (selRow) {
+				const finishedRow = Array.from(d.finished).find((f) => f.id === selRow.id);
+				const killed = finishedRow ? killLabel(finishedRow.killReason) : null;
+				if (killed) out.push(theme.fg("warning", `⚠ ${selRow.label} — ${killed}`));
+			}
+
+			out.push(theme.fg("dim", "↑/↓ select · enter output · v transcript · x kill · esc close"));
 			return out;
 		},
 
@@ -168,6 +195,28 @@ export function makeDashboardComponent(
 
 		async handleInput(data: string): Promise<void> {
 			if (mode !== "list") {
+				if ("confirmKill" in mode) {
+					if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) {
+						mode = "list";
+						refresh();
+						return;
+					}
+					// y / Y confirm the kill
+					if (data === "y" || data === "Y") {
+						const id = mode.confirmKill;
+						const result = deps.kill(id);
+						mode = "list";
+						outLines = result ? [`killed ${id}: ${result}`] : [];
+						refresh();
+						return;
+					}
+					// n / N cancels the confirm
+					if (data === "n" || data === "N") {
+						mode = "list";
+						refresh();
+					}
+					return;
+				}
 				if (matchesKey(data, Key.escape)) mode = "list";
 				else if (matchesKey(data, Key.up)) outOffset = Math.max(0, outOffset - 1);
 				else if (matchesKey(data, Key.down)) outOffset++;
@@ -179,7 +228,10 @@ export function makeDashboardComponent(
 			if (matchesKey(data, Key.down)) selected = Math.min(count - 1, selected + 1);
 			else if (matchesKey(data, Key.up)) selected = Math.max(0, selected - 1);
 			else if (matchesKey(data, Key.enter) && count > 0) await openOutput(rows[selected]!.id);
-			else if (matchesKey(data, Key.escape)) {
+			else if ((data === "v" || data === "V") && count > 0) await loadView(rows[selected]!.id, "transcript");
+			else if ((data === "x" || data === "X" || data === "k" || data === "K") && count > 0) {
+				mode = { confirmKill: rows[selected]!.id };
+			} else if (matchesKey(data, Key.escape)) {
 				done();
 				return;
 			}

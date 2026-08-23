@@ -16,6 +16,8 @@ export interface EntryView {
 	usage: { cost: number; durationMs: number };
 	summary: string;
 	outcome: string | null;
+	/** Who/what terminated the child, if not a normal completion. */
+	killReason?: "cancelled" | "shutdown" | "timeout" | null;
 }
 
 export interface DashboardRow {
@@ -29,6 +31,22 @@ export interface DashboardRow {
 	cost: number;
 	summary: string;
 	outcome: string | null;
+	/** Who/what terminated the child, if not a normal completion. */
+	killReason?: "cancelled" | "shutdown" | "timeout" | null;
+}
+
+/** Human label for a non-normal termination (shown in the dashboard). */
+export function killLabel(reason: "cancelled" | "shutdown" | "timeout" | null | undefined): string | null {
+	switch (reason) {
+		case "cancelled":
+			return "killed by user";
+		case "shutdown":
+			return "killed by shutdown";
+		case "timeout":
+			return "timed out";
+		default:
+			return null;
+	}
 }
 
 /** Prefer the human name when present, else fall back to the short id. */
@@ -102,6 +120,7 @@ function row(e: EntryView): DashboardRow {
 		cost: e.usage.cost,
 		summary: e.summary,
 		outcome: e.outcome,
+		killReason: e.killReason,
 	};
 }
 

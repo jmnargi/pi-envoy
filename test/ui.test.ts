@@ -9,6 +9,7 @@ import {
 	fmtAge,
 	fmtCost,
 	fmtShortId,
+	killLabel,
 	stateToken,
 	truncate,
 	type EntryView,
@@ -85,18 +86,31 @@ describe("stateToken", () => {
 	});
 });
 
+describe("killLabel", () => {
+	test("maps termination reasons to human labels", () => {
+		expect(killLabel("cancelled")).toBe("killed by user");
+		expect(killLabel("shutdown")).toBe("killed by shutdown");
+		expect(killLabel("timeout")).toBe("timed out");
+	});
+	test("null/undefined means normal completion", () => {
+		expect(killLabel(null)).toBeNull();
+		expect(killLabel(undefined)).toBeNull();
+	});
+});
+
 describe("dashboardData", () => {
 	test("partitions running/queued/finished and sums cost", () => {
 		const d = dashboardData([
 			view({ id: "sa_aaaa1111", state: "running", startedAt: 10_000, usage: { cost: 0.001, durationMs: 0 } }),
 			view({ id: "sa_bbbb2222", state: "queued", queuedAt: 500, startedAt: 0 }),
-			view({ id: "sa_cccc3333", state: "done", startedAt: 100, endedAt: 500, outcome: "verified", usage: { cost: 0.004, durationMs: 400 }, summary: "ok" }),
+			view({ id: "sa_cccc3333", state: "done", startedAt: 100, endedAt: 500, outcome: "verified", usage: { cost: 0.004, durationMs: 400 }, summary: "ok", killReason: "cancelled" }),
 		]);
 		expect(d.totals).toEqual({ running: 1, queued: 1, finished: 1, costUsd: 0.005 });
 		expect(d.running[0]?.shortId).toBe("aaaa1111");
 		expect(d.running[0]?.ageMs).toBeGreaterThan(0);
 		expect(d.queued[0]?.agent).toBe("worker");
 		expect(d.finished[0]?.summary).toBe("ok");
+		expect(d.finished[0]?.killReason).toBe("cancelled");
 	});
 
 	test("finished rows are capped at the limit", () => {
