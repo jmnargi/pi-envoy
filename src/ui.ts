@@ -6,6 +6,8 @@
 /** Minimal child view consumed by the live dashboard. */
 export interface EntryView {
 	id: string;
+	/** Human-readable name (spec.name); falls back to agent profile name. */
+	name: string;
 	agent: string;
 	state: string;
 	queuedAt: number;
@@ -19,12 +21,21 @@ export interface EntryView {
 export interface DashboardRow {
 	id: string;
 	shortId: string;
+	/** Human-readable name shown in the UI. */
+	name: string;
 	agent: string;
 	state: string;
 	ageMs: number;
 	cost: number;
 	summary: string;
 	outcome: string | null;
+}
+
+/** Prefer the human name when present, else fall back to the short id. */
+export function displayName(e: { name?: string; agent?: string; id: string }): string {
+	if (e.name && e.name.trim() !== "") return e.name;
+	if (e.agent && e.agent.trim() !== "") return e.agent;
+	return fmtShortId(e.id);
 }
 
 export interface Dashboard {
@@ -63,8 +74,8 @@ export function truncate(text: string, max: number): string {
 	return text.slice(0, Math.max(0, max - 1)) + "…";
 }
 
-/** Theme token for a child state. */
-export function stateToken(state: string): string {
+/** Theme token for a child state (subset of pi's ThemeColor). */
+export function stateToken(state: string): "success" | "error" | "warning" | "accent" {
 	switch (state) {
 		case "verified":
 		case "done":
@@ -84,6 +95,7 @@ function row(e: EntryView): DashboardRow {
 	return {
 		id: e.id,
 		shortId: fmtShortId(e.id),
+		name: displayName(e),
 		agent: e.agent,
 		state: e.state,
 		ageMs: Date.now() - (e.startedAt || e.queuedAt),

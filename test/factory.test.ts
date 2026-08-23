@@ -29,20 +29,24 @@ interface FakePi {
 	tools: RegisteredTool[];
 	commands: string[];
 	events: string[];
+	messageRenderers: string[];
 }
 
 function makeFakePi(): FakePi {
 	const tools: RegisteredTool[] = [];
 	const commands: string[] = [];
 	const events: string[] = [];
+	const messageRenderers: string[] = [];
 	// Unchecked cast: fake stands in for pi's full surface; registration-only members are exercised.
 	const surface = {
 		registerTool: (t: RegisteredTool) => tools.push(t),
 		registerCommand: (_name: string, _def: unknown) => commands.push(_name),
 		on: (event: string, _handler: unknown) => events.push(event),
+		registerMessageRenderer: (customType: string, _renderer: unknown) => messageRenderers.push(customType),
+		sendMessage: () => {},
 		sendUserMessage: () => Promise.resolve(),
 	} as unknown as ExtensionAPI;
-	return { pi: surface, tools, commands, events };
+	return { pi: surface, tools, commands, events, messageRenderers };
 }
 
 let tmp: string;
@@ -89,12 +93,13 @@ describe("extension factory surface", () => {
 		const fake = makeFakePi();
 		makeEnvoy(fake.pi);
 		const spawn = fake.tools.find((t) => t.name === "subagent_spawn");
-		expect(spawn?.promptGuidelines).toHaveLength(5);
+		expect(spawn?.promptGuidelines).toHaveLength(6);
 		for (const g of spawn?.promptGuidelines ?? []) {
 			expect(g.startsWith("subagent_spawn:")).toBe(true);
 		}
 		const joined = spawn?.promptGuidelines?.join(" ") ?? "";
 		expect(joined).toContain("no setup required");
+		expect(joined).toContain("short descriptive name");
 		expect(joined).toContain("precise contract");
 		expect(joined).toContain("untrusted data");
 		expect(joined).toContain("wait=true");
@@ -107,12 +112,13 @@ describe("extension factory surface", () => {
 		expect(send?.promptGuidelines?.join(" ")).toContain("injected into the child's conversation");
 	});
 
-	test("registers envoy commands and session lifecycle events", () => {
+	test("registers envoy commands, session events, and the message renderer", () => {
 		const fake = makeFakePi();
 		makeEnvoy(fake.pi);
 		expect(fake.commands).toContain("envoy");
 		expect(fake.commands).toContain("envoy-cleanup");
 		expect(fake.events).toContain("session_start");
 		expect(fake.events).toContain("session_shutdown");
+		expect(fake.messageRenderers).toContain("envoy-message");
 	});
 });

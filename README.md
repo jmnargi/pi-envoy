@@ -99,11 +99,11 @@ which yields `subagent_spawn { wait: false }` → `subagent_wait { ids: [...] }`
 
 | Tool | Purpose |
 |------|---------|
-| `subagent_spawn` | Delegate a task to a child `pi` process with a formal contract. `agent` is optional (built-in task subagent by default); `wait: true` blocks and returns the full result. |
+| `subagent_spawn` | Delegate a task to a child `pi` process with a formal contract. `agent` is optional (built-in task subagent by default); `name` gives it a label shown in the UI; `wait: true` blocks and returns the full result. |
 | `subagent_wait` | **The wait-on-one primitive.** Blocks until the listed children settle (or the timeout fires); `all: false` returns on the first to settle. |
 | `subagent_status` | Registry summary, or one child's full record (use `all: false`-style polling). |
 | `subagent_messages` | Read the bus: a child's OUTBOX (progress/checkpoints) or your own inbox (steering/questions). Optional `since` (epoch ms) and `kind` filters. |
-| `subagent_send` | Deliver a message to a child; it is injected into the child's conversation as a user message right after its current step (no polling needed). |
+| `subagent_send` | Deliver a message to a child; it is injected into the child's conversation as a custom turn-triggering message (rendered with its own TUI block, no polling needed). |
 | `subagent_post` | Broadcast to the bus: `main`, `parent`, or the shared `group` channel — inter-subagent and parent/child communication. |
 | `subagent_reputation` | Aggregate per-agent outcomes from the audit ledger (success rate, median duration, cost). |
 | `subagent_cancel` | Terminate a running/queued child (SIGTERM → SIGKILL), respecting worktree-keep policy. |
@@ -114,25 +114,30 @@ Commands: `/envoy` (live dashboard overlay), `/envoy-cleanup` (prune).
 
 Watching subagents run is a first-class part of the plugin in the pi TUI:
 
-- **Footer status** (`ctx.ui.setStatus`): a compact `envoy 2 running ·
-  1 queued · $0.014` line that updates on every lifecycle event while
-  children are in flight.
-- **Widget above the editor** (`ctx.ui.setWidget`): the most recent
-  running/queued/finished children with age and running cost, refreshed once
-  per second while anything is busy and cleared on `session_shutdown`.
+- **Footer status** (`ctx.ui.setStatus`): a compact `envoy 2 run · 1 queued ·
+  $0.014` line that appears **only while children are in flight** and clears
+  when everything settles — nothing lingers above the editor.
 - **`/envoy` live dashboard** (`ctx.ui.custom` overlay): lists RUNNING /
-  QUEUED / FINISHED children with agent, age, cost and summary. Keys: ↑/↓
-  select a child · enter to view its bus output + final summary · esc close.
-  The overlay refreshes every second while open.
+  QUEUED / FINISHED children by their **name** (the `name` you pass to
+  `subagent_spawn`) with age, cost and summary. Keys: ↑/↓ select a child ·
+  enter to view its bus output + final summary · esc close. The overlay
+  refreshes every second while open.
+- **Custom message rendering** (`sendMessage` + `registerMessageRenderer`):
+  when one agent messages another, the message is injected into the
+  recipient's conversation as a **custom message** with its own TUI block —
+  `envoy ← <sender> [<kind>]` — and `triggerTurn: true`, so the model sees it
+  as a fresh turn in context. No read/unread inbox, no polling, no "remember
+  to check your inbox" instructions.
 - **Tool-call rendering** (`renderCall`/`renderResult`): every `subagent_*`
-  call renders as a compact `envoy spawn worker "objective…"`-style row with
-  a themed result line (success/error, truncated), instead of raw JSON.
+  call renders as a compact `envoy spawn <name> "<objective…>"` row with a
+  themed result line (state badge, duration, cost), instead of raw JSON.
 
-The UI is best-effort: guarded on `ctx.hasUI`, falls back to a plain
-notification when the TUI is unavailable (`-p`/JSON/RPC), and shows
-`envoy idle` when no children exist. All rendering follows pi's documented
-TUI extension API (`setStatus`, `setWidget`, `ui.custom`, `renderCall`); the
-pure data shaping lives in `src/ui.ts` and is unit-tested.
+The UI is best-effort: guarded on `ctx.hasUI`, falls back to plain
+notifications when the TUI is unavailable (`-p`/JSON/RPC), and disappears
+entirely when no children exist. All rendering follows pi's documented TUI
+extension API (`setStatus`, `sendMessage`, `registerMessageRenderer`,
+`ui.custom`, `renderCall`); the pure data shaping lives in `src/ui.ts` and is
+unit-tested.
 
 ## How the model learns about this plugin
 
@@ -233,7 +238,7 @@ contains:
 - **Verification** — the `verify` command the delegator will run afterwards (§4.8);
 - **Reporting** — cadence (`none` / `on-checkpoint` / `turn`), the exact
   `echo '{"ts":…,"from":…,"to":"parent","kind":"checkpoint","text":"…"}' >> OUTBOX`
-  template, push-delivered messages (injected as user messages mid-run), and the group/main channel paths (§4.2/§4.5);
+  template, push-delivered messages (injected as turn-triggering custom messages mid-run), and the group/main channel paths (§4.2/§4.5);
 - **Budget and deadline** — optional hard timeout and advisory cost (§4.3, §4.4).
 
 ## Data layout
@@ -265,7 +270,7 @@ contains:
 | `defaultWorktree` / `PI_ENVOY_DEFAULTWORKTREE` | false | Isolate every child in a worktree by default |
 | `killChildrenOnShutdown` / `PI_ENVOY_KILLONSHUTDOWN` | true | Terminate running children on `session_shutdown` |
 | `keepRunningChildrenWorktrees` | true | Never auto-remove worktrees while children run |
-| `pushInterject` / `PI_ENVOY_PUSHINTERJECT` | true | Inject inbound messages into the agent as user messages immediately (steer delivery) |
+| `pushInterject` / `PI_ENVOY_PUSHINTERJECT` | true | Inject inbound messages into the agent as turn-triggering custom messages (steer delivery) |
 | `PI_ENVOY_DISABLED` | unset | `"1"` disables the extension entirely |
 
 ## Agent profiles

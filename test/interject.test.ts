@@ -68,14 +68,17 @@ describe("injectableKind", () => {
 });
 
 describe("formatInjectedMessage", () => {
-	test("prefixes with the sender", () => {
-		expect(formatInjectedMessage(msg({ from: "sa_parent" }))).toBe(
-			"[envoy: sa_parent] focus on error handling",
-		);
+	test("shapes a custom message with sender provenance", () => {
+		const shaped = formatInjectedMessage(msg({ from: "sa_parent" }));
+		expect(shaped.customType).toBe("envoy-message");
+		expect(shaped.content).toBe("focus on error handling");
+		expect(shaped.display).toBe(true);
+		expect(shaped.details).toEqual({ from: "sa_parent", kind: "steer", ts: 1000 });
 	});
 
 	test("maps an empty sender to main", () => {
-		expect(formatInjectedMessage(msg({ from: "" }))).toBe("[envoy: main] focus on error handling");
+		const shaped = formatInjectedMessage(msg({ from: "" }));
+		expect(shaped.details.from).toBe("main");
 	});
 });
 

@@ -32,11 +32,17 @@ import { buildContractText, runVerify, writeContractFile } from "./contract.ts";
 import { type SpawnedChild, spawnChild } from "./spawn.ts";
 import { discoverAgents, discoverBundledAgents, defaultTaskAgent } from "./agents.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { INTERJECT_POLL_MS, formatInjectedMessage, injectableKind, readNewInbox } from "./interject.ts";
+import {
+	ENVOY_MESSAGE_CUSTOM_TYPE,
+	INTERJECT_POLL_MS,
+	formatInjectedMessage,
+	injectableKind,
+	readNewInbox,
+} from "./interject.ts";
 import { Text, type Component } from "@earendil-works/pi-tui";
 
 import { makeDashboardComponent, type DashboardDeps, type ThemeLike } from "./dashboard.ts";
-import { dashboardData, fmtAge, fmtCost, fmtShortId, truncate, type EntryView } from "./ui.ts";
+import { dashboardData, fmtAge, fmtCost, fmtShortId, stateToken, truncate, type EntryView } from "./ui.ts";
 import type {
 	AgentProfile,
 	Attestation,
@@ -111,6 +117,8 @@ interface ChildEntry {
 	id: string;
 	spec: TaskSpec;
 	profileName: string;
+	/** Human-readable name (spec.name) for UI display; falls back to profile/agent. */
+	name: string;
 	state: ChildState;
 	runner: SpawnedChild | null;
 	worktree: WorktreeInfo | undefined;
@@ -209,7 +217,8 @@ function formatAge(ts: number): string {
 
 function formatResultText(result: ToolChildResult): string {
 	const parts: string[] = [];
-	parts.push(`${result.id} (${result.agent}): state=${result.state}`);
+	const label = result.name && result.name.trim() !== "" ? result.name : result.id;
+	parts.push(`${label} (${result.agent}): state=${result.state}`);
 	if (result.exitCode !== null) parts.push(`exit=${result.exitCode}`);
 	if (result.verify) {
 		parts.push(`verify=${result.verify.exitCode === 0 ? "passed" : `failed(${result.verify.exitCode})`}`);
@@ -250,9 +259,10 @@ function renderResultLine(
 	result: { content?: Array<{ type: string; text?: string }> },
 	theme: ThemeLike,
 	context: { lastComponent?: Component; isError?: boolean },
+	customBody?: string,
 ): Text {
 	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-	const body = truncate(envoyTextOf(result).replace(/\s+/g, " ").trim(), 150) || "done";
+	const body = customBody ?? (truncate(envoyTextOf(result).replace(/\s+/g, " ").trim(), 150) || "done");
 	text.setText(theme.fg(context.isError ? "error" : "success", body));
 	return text;
 }
@@ -273,15 +283,18 @@ export default function (pi: ExtensionAPI): void {
 		else console.error(msg);
 	};
 
-	/** Deliver an inbox message into the agent's conversation as a user message (§4.5 push). */
-	const injectNow = (text: string): void => {
-		const send = pi.sendUserMessage.bind(pi) as unknown as (
-			content: string,
-			options: { deliverAs?: "steer" | "followUp" },
-		) => Promise<void>;
-		void send(text, { deliverAs: "steer" }).catch((err: unknown) => {
+	/**
+	 * Deliver an inbox message into the agent's conversation as a custom,
+	 * turn-triggering message (§4.5 push). `sendMessage` + a custom renderer
+	 * means the message appears with its own TUI appearance AND the model
+	 * sees it in context as a fresh turn — no polling, no read/unread.
+	 */
+	const injectNow = (m: ReturnType<typeof formatInjectedMessage>): void => {
+		try {
+			pi.sendMessage(m, { triggerTurn: true, deliverAs: "steer" });
+		} catch (err) {
 			logWarn(`envoy interject failed: ${String(err)}`);
-		});
+		}
 	};
 
 	/** Watch this agent's own inbox and interject incoming messages immediately. */
@@ -303,6 +316,16 @@ export default function (pi: ExtensionAPI): void {
 		stopInterject = () => clearInterval(timer);
 	};
 
+	/** Register the custom TUI renderer for envoy-injected messages. */
+	pi.registerMessageRenderer(ENVOY_MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
+		const details = message.details as { from?: string; kind?: string } | undefined;
+		const from = details?.from ?? "agent";
+		const kind = details?.kind ?? "message";
+		const content = typeof message.content === "string" ? message.content : "";
+		const head = theme.fg("accent", theme.bold(`envoy ← ${from}`)) + theme.fg("dim", ` [${kind}]`);
+		return new Text(`${head}\n${content}`, 1, 0);
+	});
+
 	let envoyTicker: NodeJS.Timeout | undefined;
 	let uiHost:
 		| {
@@ -317,6 +340,7 @@ export default function (pi: ExtensionAPI): void {
 
 	const entryView = (e: ChildEntry): EntryView => ({
 		id: e.id,
+		name: e.name,
 		agent: e.profileName,
 		state: e.state,
 		queuedAt: e.queuedAt,
@@ -331,6 +355,7 @@ export default function (pi: ExtensionAPI): void {
 		entries: () => Array.from(entries.values()).map(entryView),
 		readOutbox: (id) => readMessages(outboxPath(id)),
 		summaryOf: (id) => entries.get(id)?.summary ?? "",
+		nameOf: (id) => entries.get(id)?.name ?? fmtShortId(id),
 	});
 
 	/** Push the current registry snapshot into the TUI footer status + widget. */
@@ -338,18 +363,16 @@ export default function (pi: ExtensionAPI): void {
 		if (!uiHost?.hasUI) return;
 		try {
 			const d = dashboardData(Array.from(entries.values()).map(entryView));
-			uiHost.ui.setStatus(
-				"envoy",
-				`envoy ${d.totals.running} running · ${d.totals.queued} queued · ${fmtCost(d.totals.costUsd)}`,
-			);
-			const lines: string[] = [];
-			for (const r of d.running.slice(0, 5)) lines.push(`● ${r.shortId} ${r.agent} ${fmtAge(r.ageMs)} ${fmtCost(r.cost)}`);
-			for (const r of d.queued.slice(0, 3)) lines.push(`· ${r.shortId} ${r.agent} queued`);
-			if (d.finished.length > 0) {
-				const last = d.finished[0]!;
-				lines.push(`✓ ${last.shortId} ${last.state} ${fmtAge(last.ageMs)} ${fmtCost(last.cost)}`);
+			const t = d.totals;
+			// Footer status only while there is live activity; clears when idle.
+			if (t.running + t.queued + t.finished > 0) {
+				const parts = [`${t.running} run`, `${t.queued} queued`, `${fmtCost(t.costUsd)}`];
+				uiHost.ui.setStatus("envoy", `envoy ${parts.filter(Boolean).join(" · ")}`);
+			} else {
+				uiHost.ui.setStatus("envoy", undefined);
 			}
-			uiHost.ui.setWidget("envoy", lines.length > 0 ? lines : ["envoy idle"]);
+			// No widget above the editor — the dashboard (/envoy) is the on-demand view.
+			uiHost.ui.setWidget("envoy", undefined);
 		} catch {
 			// UI surface unavailable (print/rpc/teardown) — best-effort only
 		}
@@ -495,6 +518,7 @@ export default function (pi: ExtensionAPI): void {
 			id,
 			spec: prepared.spec,
 			profileName: prepared.profile.name,
+			name: prepared.spec.name ?? prepared.profile.name,
 			state: "queued",
 			runner: null,
 			worktree: prepared.worktree,
@@ -673,6 +697,7 @@ export default function (pi: ExtensionAPI): void {
 		return {
 			id: entry.id,
 			agent: entry.profileName,
+			name: entry.name,
 			state: entry.state,
 			exitCode: null,
 			error: note,
@@ -791,6 +816,7 @@ export default function (pi: ExtensionAPI): void {
 		const result: ToolChildResult = {
 			id: entry.id,
 			agent: entry.profileName,
+			name: entry.name,
 			state: baseState,
 			exitCode: entry.exitCode,
 			stopReason: entry.stopReason,
@@ -927,6 +953,7 @@ export default function (pi: ExtensionAPI): void {
 			.filter((e) => e.state === "running" || e.state === "starting" || e.state === "verifying")
 			.map((e) => ({
 				id: e.id,
+				name: e.name,
 				agent: e.profileName,
 				ageMs: Date.now() - (e.startedAt || e.queuedAt),
 				worktree: e.worktree?.path,
@@ -946,12 +973,12 @@ export default function (pi: ExtensionAPI): void {
 		lines.push(
 			running.length > 0
 				? `running: ${running
-						.map((r) => `${r.id} (${r.agent}) ${formatAge(Date.now() - r.ageMs)}${r.worktree ? ` wt=${r.worktree}` : ""}`)
+						.map((r) => `${r.name} (${r.agent}) ${formatAge(Date.now() - r.ageMs)}${r.worktree ? ` wt=${r.worktree}` : ""}`)
 						.join("; ")}`
 				: "running: none",
 		);
 		lines.push(queued.length > 0 ? `queued: ${queued.join(", ")}` : "queued: none");
-		lines.push(`own inbox: ${inboxCount} unread message(s)`);
+		lines.push(`own inbox: ${inboxCount} message(s)`);
 
 		return {
 			text: lines.join("\n"),
@@ -981,15 +1008,34 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "subagent_spawn",
 		renderCall(args, theme, context) {
-			return renderCallLine(theme, context, `${theme.fg("toolTitle", theme.bold("envoy spawn"))} ${theme.fg("accent", argStr(args, "agent"))} ${theme.fg("dim", truncate(argStr(args, "objective"), 64))}`);
+			const label = argStr(args, "name") || argStr(args, "agent") || "task";
+			const objective = truncate(argStr(args, "objective"), 60);
+			return renderCallLine(
+				theme,
+				context,
+				`${theme.fg("toolTitle", theme.bold("envoy spawn"))} ${theme.fg("accent", label)} ${theme.fg("dim", objective)}`,
+			);
 		},
 		renderResult(result, options, theme, context) {
+			const details = result.details as
+				| { state?: string; outcome?: string; durationMs?: number; usage?: { cost?: number } }
+				| undefined;
+			if (details && typeof details.state === "string") {
+				const state = details.outcome ?? details.state;
+				const duration = details.durationMs ? fmtAge(details.durationMs) : "";
+				const cost = details.usage?.cost ? fmtCost(details.usage.cost) : "";
+				const label = theme.fg(stateToken(state), theme.bold(state));
+				const meta = [duration, cost].filter(Boolean).join(" · ");
+				const text = meta ? `${label} · ${theme.fg("dim", meta)}` : label;
+				return renderResultLine(result, theme, context, text);
+			}
 			return renderResultLine(result, theme, context);
 		},
 		label: "Spawn Subagent",
 		promptSnippet: "Delegate substantial work to an isolated pi subagent (contract first)",
 		promptGuidelines: [
 			"subagent_spawn: no setup required — omit agent to use the built-in task subagent, which is already told how the delegation contract and bus messaging work.",
+			"subagent_spawn: give each subagent a short descriptive name (name=...) — it is shown in the UI and logs instead of a bare id.",
 			"subagent_spawn: write the objective and acceptance criteria as a precise contract, then delegate — contract clarity is the single biggest quality lever.",
 			"subagent_spawn: delegate only substantial work; a child costs a full model invocation, so trivial questions are faster handled inline (§4.4).",
 			"subagent_spawn: use wait=true to block for the result, or spawn in the background and call subagent_wait later; add a verify command when the outcome must be exact.",
@@ -998,6 +1044,7 @@ export default function (pi: ExtensionAPI): void {
 		description: [
 			"Delegate a substantial task to a background pi subagent with its own isolated context, running as a separate process.",
 			"Zero configuration: omit the agent to use the built-in task subagent (executes one contract, can message the parent and siblings). Profiles are optional; you never need to create one.",
+			"Give each subagent a short name (name=...) so it is easy to identify in the UI, dashboard and logs; the name is shown instead of the bare id.",
 			"Only delegate substantial work: spawning a child costs a full model invocation, so trivial questions cost more than they save (paper §4.4).",
 			"Set wait=true to block until completion (capped at timeoutMs or 120s) and receive the full result; otherwise start in the background and call subagent_wait with the returned id.",
 			"readOnly children get a read-only toolset and can never spawn; autonomy='open' lets the child recursively delegate (bounded by maxDepth).",
@@ -1006,6 +1053,7 @@ export default function (pi: ExtensionAPI): void {
 		].join(" "),
 		parameters: Type.Object({
 			agent: Type.Optional(Type.String({ description: "Agent profile name; omit to use the built-in task agent" })),
+			name: Type.Optional(Type.String({ description: "Human-readable name for this subagent, shown in the UI instead of the bare id (e.g. 'api-refactor')" })),
 			objective: Type.String({ description: "The task to execute; clarity of intent is the single biggest quality lever" }),
 			acceptance: Type.Optional(Type.Array(Type.String({ description: "Acceptance criterion" }))),
 			verify: Type.Optional(Type.String({ description: "Shell command run after completion to verify the outcome (only when config allowVerify)" })),
@@ -1033,6 +1081,7 @@ export default function (pi: ExtensionAPI): void {
 			const id = generateId();
 			const spec: TaskSpec = {
 				agent: params.agent ?? DEFAULT_AGENT,
+				name: params.name,
 				objective: params.objective,
 				acceptance: params.acceptance,
 				verify: config.allowVerify ? params.verify : undefined,
@@ -1208,7 +1257,7 @@ export default function (pi: ExtensionAPI): void {
 		promptSnippet: "List spawned subagents and their current state",
 		description: [
 			"Report the state of delegated subagents. With id: one child's full record.",
-			"Without id: a registry summary — counts per state, running children with age and worktree, queued ids, and the unread message count in your own inbox.",
+			"Without id: a registry summary — counts per state, running children with age and worktree, queued ids, and the message count in your own inbox.",
 		].join(" "),
 		parameters: Type.Object({
 			id: Type.Optional(Type.String({ description: "Subagent id; omit for the registry summary" })),
@@ -1304,12 +1353,12 @@ export default function (pi: ExtensionAPI): void {
 			return renderResultLine(result, theme, context);
 		},
 		label: "Send to Subagent",
-		promptSnippet: "Send a message to a subagent (delivered instantly as an injected user message)",
+		promptSnippet: "Send a message to a subagent (delivered instantly as an injected custom message)",
 		promptGuidelines: [
-			"subagent_send: the message is injected into the child's conversation as a user message right after its current step (no polling needed); use it to steer a running child or ask it a question — not for chat-spam.",
+			"subagent_send: the message is injected into the child's conversation as a custom turn-triggering message right after its current step (no polling needed); use it to steer a running child or ask it a question — not for chat-spam.",
 		],
 		description: [
-			"Send a message to a specific subagent. Delivery is instant: the child receives it as an injected user message right after its current step (no polling needed).",
+			"Send a message to a specific subagent. Delivery is instant: the child receives it as an injected custom message right after its current step (no polling needed).",
 			"Use it to steer a running child, ask it a question, or announce information. The child does not need to poll: the message interjects automatically.",
 			"The id must match a subagent id (sa_ + 12 hex chars) from subagent_spawn/subagent_status.",
 		].join(" "),

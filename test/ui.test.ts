@@ -16,6 +16,7 @@ import {
 
 const view = (over: Partial<EntryView>): EntryView => ({
 	id: "sa_2fc7ac2e5893",
+	name: "worker",
 	agent: "worker",
 	state: "running",
 	queuedAt: 1000,

@@ -3,13 +3,15 @@
  *
  * Incoming bus messages meant for this agent are delivered proactively: the
  * watcher in src/index.ts polls the agent's own inbox file and, for every new
- * message, injects it as a user message via `pi.sendUserMessage(...,
- * { deliverAs: "steer" })` — pi delivers that right after the current
- * assistant turn finishes its tool calls (immediately when idle). The model
- * never has to poll for messages.
+ * message, injects it as a CUSTOM message via `pi.sendMessage({ customType:
+ * "envoy-message", triggerTurn: true })`. A `registerMessageRenderer`
+ * handler renders it with a distinct TUI appearance (provenance + styled
+ * text) instead of a plain user message, and `triggerTurn: true` makes the
+ * model see it as a turn-triggering context message — so the model never has
+ * to poll its inbox or remember to check it.
  *
  * This module keeps the pure, unit-testable parts: line parsing, cursor
- * accounting, kind filtering, and message formatting.
+ * accounting, kind filtering, and message shaping.
  */
 
 import * as fs from "node:fs";
@@ -18,6 +20,9 @@ import type { BusMessage } from "./types.ts";
 
 /** Poll cadence for the inbox watcher (§4.5 monitoring — push-style delivery). */
 export const INTERJECT_POLL_MS = 750;
+
+/** The pi customType used for envoy-injected messages (matches the renderer). */
+export const ENVOY_MESSAGE_CUSTOM_TYPE = "envoy-message";
 
 /** Kinds that warrant interrupting the agent (progress is parent-side chatter). */
 const INJECTABLE_KINDS: Record<string, true> = {
@@ -28,15 +33,33 @@ const INJECTABLE_KINDS: Record<string, true> = {
 	announcement: true,
 };
 
-/** Whether a message kind should be injected as an interrupting user message (exported injection policy). */
+/** Whether a message kind should be injected as an interrupting message (exported injection policy). */
 export function injectableKind(kind: BusMessage["kind"]): boolean {
 	return INJECTABLE_KINDS[kind] === true;
 }
 
-/** Render an inbound message as the text of an injected user message. */
-export function formatInjectedMessage(m: BusMessage): string {
-	const from = m.from === "" ? "main" : m.from;
-	return `[envoy: ${from}] ${m.text}`;
+/** Sender label for the injected message (the empty sender means "main"). */
+export function senderLabel(m: BusMessage): string {
+	return m.from === "" ? "main" : m.from;
+}
+
+/**
+ * Shape the message payload for `pi.sendMessage`. The renderer reads
+ * `details.from` (provenance) and `details.kind` to render a distinct TUI
+ * block; `content` is the text the model consumes as context.
+ */
+export function formatInjectedMessage(m: BusMessage): {
+	customType: string;
+	content: string;
+	display: boolean;
+	details: { from: string; kind: string; ts: number };
+} {
+	return {
+		customType: ENVOY_MESSAGE_CUSTOM_TYPE,
+		content: m.text,
+		display: true,
+		details: { from: senderLabel(m), kind: m.kind, ts: m.ts },
+	};
 }
 
 /** Parse one JSONL line into a BusMessage; tolerates blank/corrupt lines. */

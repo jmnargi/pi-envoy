@@ -34,6 +34,8 @@ export interface DashboardDeps {
 	readOutbox(id: string): Promise<BusMessage[]>;
 	/** Human summary/result line of one child. */
 	summaryOf(id: string): string;
+	/** Human-readable display name of one child. */
+	nameOf(id: string): string;
 }
 
 
@@ -76,7 +78,7 @@ export function makeDashboardComponent(
 		const age = fmtAge(e.ageMs).padStart(6);
 		const cost = fmtCost(e.cost).padStart(7);
 		const summary = truncate(e.summary || stateLabel(e), 48);
-		return `${fmtShortId(e.id)}  ${e.agent.padEnd(9)} ${age} ${cost}  ${summary}`;
+		return `${e.name.padEnd(18)} ${age} ${cost}  ${summary}`;
 	};
 
 	const listRows = (): RowLine[] => {
@@ -121,7 +123,8 @@ export function makeDashboardComponent(
 		render(width: number): string[] {
 			if (mode !== "list") {
 				const id = mode.id;
-				const head = `${theme.fg("toolTitle", theme.bold("envoy · output"))} ${theme.fg("dim", fmtShortId(id))}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
+				const name = deps.nameOf(id);
+				const head = `${theme.fg("toolTitle", theme.bold("envoy · output"))} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
 				const body = outLoading
 					? [theme.fg("muted", "loading…")]
 					: outLines.slice(outOffset, outOffset + 20).map((l) => truncate(l, width));

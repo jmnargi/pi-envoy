@@ -70,6 +70,8 @@ export interface Usage {
 export interface TaskSpec {
 	/** Agent profile name (agents/*.md frontmatter `name`); empty/omitted uses the built-in task agent. */
 	agent: string;
+	/** Human-readable name for this subagent, shown in the UI instead of the bare id. */
+	name?: string;
 	/** The objective. Clarity of intent (§2.1). */
 	objective: string;
 	/** Acceptance criteria the delegatee must satisfy (§4.1 verifiability). */
@@ -120,6 +122,8 @@ export interface TaskSpec {
 export interface ChildResult {
 	id: string;
 	agent: string;
+	/** Human-readable name shown in the UI (spec.name, falls back to agent). */
+	name: string;
 	state: ChildState;
 	exitCode: number | null;
 	stopReason?: string;
@@ -256,7 +260,7 @@ export interface PluginConfig {
 	killChildrenOnShutdown: boolean;
 	/** Suppress worktree auto-cleanup while children run (safety). */
 	keepRunningChildrenWorktrees: boolean;
-	/** Interject inbox messages into the agent as user messages immediately (no polling). */
+	/** Interject inbox messages into the agent as turn-triggering custom messages (no polling). */
 	pushInterject: boolean;
 }
 

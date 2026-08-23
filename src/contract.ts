@@ -147,7 +147,7 @@ export function buildContractText(args: {
 	const reporting = [
 		reportingPolicy(spec, outbox),
 		"",
-		`Incoming delegator messages are injected into your conversation automatically as new user messages after your current step — prioritize them. Messages that arrived before you started are in ${inbox}; you may read them there.`,
+		`Incoming delegator messages are injected into your conversation automatically as new messages after your current step — prioritize them. Messages that arrived before you started are in ${inbox}; you may read them there.`,
 		"",
 		`You may post messages to the group channel ${groupChannel} for siblings, and to main via path ${ctx.mainInbox}.`,
 	];
