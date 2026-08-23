@@ -117,13 +117,14 @@ Watching subagents run is a first-class part of the plugin in the pi TUI:
 - **Footer status** (`ctx.ui.setStatus`): a compact `envoy 2 run · 1 queued ·
   $0.014` line that appears **only while children are in flight** and clears
   when everything settles — nothing lingers above the editor.
-- **`/envoy` live dashboard** (`ctx.ui.custom` overlay): lists RUNNING /
-  QUEUED / FINISHED children by their **name** (the `name` you pass to
-  `subagent_spawn`) with age, cost and summary. Keys: ↑/↓ select a child ·
-  **enter** view its bus output + final summary · **v** view the subagent's
-  own transcript (its actual messages, captured live) · **x** kill a
-  running/queued child (y/n confirm; recorded as "killed by user") · esc
-  close. The overlay refreshes every second while open.
+- **`/envoy` live dashboard** (`ctx.ui.custom` overlay): a framed popup
+  (distinct background + borders) listing RUNNING / QUEUED / FINISHED
+  children by their **name** (the `name` you pass to `subagent_spawn`) with
+  age, cost and summary. Keys: ↑/↓ select a child · **enter** view its bus
+  output + final summary · **v** view the subagent's own transcript (its
+  actual messages, captured live) · **x** kill a running/queued child (y/n
+  confirm; recorded as "killed by user") · esc close. The overlay refreshes
+  every second while there are children to watch.
 - **Custom message rendering** (`sendMessage` + `registerMessageRenderer`):
   when one agent messages another, the message is injected into the
   recipient's conversation as a **custom message** with its own TUI block —
