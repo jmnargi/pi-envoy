@@ -53,8 +53,19 @@ function textOf(m) {
 function planReply(msgs) {
 	const all = msgs.map(textOf).join("\n");
 	if (all.includes("Delegation Contract")) {
-		// Child pi process: confirm it saw the task subagent prompt, then OK.
-		return { kind: "text", text: all.includes("task subagent") ? "OK" : "MISSING_TASK_PROMPT" };
+		const sawTaskPrompt = /task subagent/i.test(all);
+		const didRead = msgs.some(
+			(m) => m.role === "tool" || (Array.isArray(m.content) && m.content.some((c) => c?.type === "toolResult")),
+		);
+		if (!didRead) {
+			return {
+				kind: "tool",
+				tool_name: "read",
+				tool_call_id: "call_child_read",
+				tool_args: JSON.stringify({ path: "package.json" }),
+			};
+		}
+		return { kind: "text", text: sawTaskPrompt ? "OK" : "MISSING_TASK_PROMPT" };
 	}
 	if (msgs.some((m) => m.role === "tool")) {
 		const ok = all.includes("OK");
