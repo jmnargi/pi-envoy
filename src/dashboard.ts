@@ -86,7 +86,15 @@ export function makeDashboardComponent(
 			// overlay may already be gone — ignore
 		}
 	};
-	const timer = setInterval(refresh, 1000);
+	// Refresh once per second only while there are children to watch; when the
+	// registry is idle the popup is static, so we avoid fighting background
+	// re-renders of the chat behind the overlay.
+	const timer = setInterval(() => {
+		const d = dashboardData(deps.entries());
+		if (d.totals.running + d.totals.queued + d.totals.finished > 0 || mode !== "list") {
+			refresh();
+		}
+	}, 1000);
 
 	const rowLabel = (e: DashboardRow): string => {
 		const age = fmtAge(e.ageMs).padStart(6);
