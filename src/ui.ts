@@ -13,7 +13,22 @@ export interface EntryView {
 	queuedAt: number;
 	startedAt: number;
 	endedAt: number;
-	usage: { cost: number; durationMs: number };
+	usage: {
+		cost: number;
+		durationMs: number;
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		contextTokens: number;
+		turns: number;
+	};
+	/** Model pattern in use (inherited if unset). */
+	model?: string;
+	/** Extended-thinking level, if any. */
+	thinking?: string;
+	/** Most recent assistant activity line (live feed). */
+	lastActivity?: string;
 	summary: string;
 	outcome: string | null;
 	/** Who/what terminated the child, if not a normal completion. */
@@ -29,6 +44,15 @@ export interface DashboardRow {
 	state: string;
 	ageMs: number;
 	cost: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	contextTokens: number;
+	turns: number;
+	model?: string;
+	thinking?: string;
+	lastActivity?: string;
 	summary: string;
 	outcome: string | null;
 	/** Who/what terminated the child, if not a normal completion. */
@@ -86,6 +110,35 @@ export function fmtCost(cost: number): string {
 	return `$${cost >= 0.01 ? cost.toFixed(3) : cost.toFixed(4)}`;
 }
 
+/** 1234 → "1.2k"; 1_234_567 → "1.2M" */
+export function fmtTokens(n: number): string {
+	if (!(n > 0)) return "-";
+	if (n < 1000) return String(n);
+	if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+	return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** "high" → "hi"; "xhigh" → "xhi"; unset → "-" */
+export function fmtThinking(level: string | undefined): string {
+	if (!level) return "-";
+	const short: Record<string, string> = {
+		off: "off",
+		minimal: "min",
+		low: "lo",
+		medium: "med",
+		high: "hi",
+		xhigh: "xhi",
+		max: "max",
+	};
+	return short[level] ?? level;
+}
+
+/** "gpt-5-code" → "gpt-5" (strip trailing -code/-latest/etc.) */
+export function fmtModel(model: string | undefined): string {
+	if (!model) return "-";
+	return model.replace(/-(code|latest|max|pro)$/i, "");
+}
+
 /** Truncate to `max` chars, preserving a trailing ellipsis marker. */
 export function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
@@ -118,6 +171,15 @@ function row(e: EntryView): DashboardRow {
 		state: e.state,
 		ageMs: Date.now() - (e.startedAt || e.queuedAt),
 		cost: e.usage.cost,
+		input: e.usage.input,
+		output: e.usage.output,
+		cacheRead: e.usage.cacheRead,
+		cacheWrite: e.usage.cacheWrite,
+		contextTokens: e.usage.contextTokens,
+		turns: e.usage.turns,
+		model: e.model,
+		thinking: e.thinking,
+		lastActivity: e.lastActivity,
 		summary: e.summary,
 		outcome: e.outcome,
 		killReason: e.killReason,

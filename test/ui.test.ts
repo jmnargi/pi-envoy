@@ -8,12 +8,17 @@ import {
 	dashboardData,
 	fmtAge,
 	fmtCost,
+	fmtModel,
 	fmtShortId,
+	fmtThinking,
+	fmtTokens,
 	killLabel,
 	stateToken,
 	truncate,
 	type EntryView,
 } from "../src/ui.ts";
+
+const viewDefaultUsage = { cost: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: 0, turns: 0 };
 
 const view = (over: Partial<EntryView>): EntryView => ({
 	id: "sa_2fc7ac2e5893",
@@ -23,7 +28,7 @@ const view = (over: Partial<EntryView>): EntryView => ({
 	queuedAt: 1000,
 	startedAt: 2000,
 	endedAt: 0,
-	usage: { cost: 0, durationMs: 0 },
+	usage: { ...viewDefaultUsage },
 	summary: "",
 	outcome: null,
 	...over,
@@ -98,12 +103,40 @@ describe("killLabel", () => {
 	});
 });
 
+describe("fmtTokens", () => {
+	test("formats raw, thousands, millions", () => {
+		expect(fmtTokens(0)).toBe("-");
+		expect(fmtTokens(500)).toBe("500");
+		expect(fmtTokens(1234)).toBe("1.2k");
+		expect(fmtTokens(1_234_567)).toBe("1.2M");
+	});
+});
+
+describe("fmtThinking", () => {
+	test("maps levels to short labels, unset to dash", () => {
+		expect(fmtThinking(undefined)).toBe("-");
+		expect(fmtThinking("high")).toBe("hi");
+		expect(fmtThinking("xhigh")).toBe("xhi");
+		expect(fmtThinking("medium")).toBe("med");
+		expect(fmtThinking("unknown")).toBe("unknown");
+	});
+});
+
+describe("fmtModel", () => {
+	test("strips common suffixes, unset to dash", () => {
+		expect(fmtModel(undefined)).toBe("-");
+		expect(fmtModel("gpt-5-code")).toBe("gpt-5");
+		expect(fmtModel("claude-sonnet-latest")).toBe("claude-sonnet");
+		expect(fmtModel("gemini-pro")).toBe("gemini");
+	});
+});
+
 describe("dashboardData", () => {
 	test("partitions running/queued/finished and sums cost", () => {
 		const d = dashboardData([
-			view({ id: "sa_aaaa1111", state: "running", startedAt: 10_000, usage: { cost: 0.001, durationMs: 0 } }),
+			view({ id: "sa_aaaa1111", state: "running", startedAt: 10_000, usage: { ...viewDefaultUsage, cost: 0.001 } }),
 			view({ id: "sa_bbbb2222", state: "queued", queuedAt: 500, startedAt: 0 }),
-			view({ id: "sa_cccc3333", state: "done", startedAt: 100, endedAt: 500, outcome: "verified", usage: { cost: 0.004, durationMs: 400 }, summary: "ok", killReason: "cancelled" }),
+			view({ id: "sa_cccc3333", state: "done", startedAt: 100, endedAt: 500, outcome: "verified", usage: { ...viewDefaultUsage, cost: 0.004, durationMs: 400 }, summary: "ok", killReason: "cancelled" }),
 		]);
 		expect(d.totals).toEqual({ running: 1, queued: 1, finished: 1, costUsd: 0.005 });
 		expect(d.running[0]?.shortId).toBe("aaaa1111");

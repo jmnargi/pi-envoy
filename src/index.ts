@@ -348,11 +348,40 @@ export default function (pi: ExtensionAPI): void {
 		queuedAt: e.queuedAt,
 		startedAt: e.startedAt,
 		endedAt: e.endedAt,
-		usage: { cost: e.usage.cost, durationMs: e.usage.durationMs },
+		usage: {
+			cost: e.usage.cost,
+			durationMs: e.usage.durationMs,
+			input: e.usage.input,
+			output: e.usage.output,
+			cacheRead: e.usage.cacheRead,
+			cacheWrite: e.usage.cacheWrite,
+			contextTokens: e.usage.contextTokens,
+			turns: e.usage.turns,
+		},
+		model: e.model,
+		thinking: e.spec.thinking,
+		lastActivity: lastActivityText(e),
 		summary: e.summary,
 		outcome: e.attestation ? e.attestation.outcome : null,
 		killReason: e.killReason,
 	});
+
+	/** Most recent assistant text from a child's in-memory messages (live feed). */
+	function lastActivityText(e: ChildEntry): string | undefined {
+		for (let i = e.messages.length - 1; i >= 0; i--) {
+			const msg = e.messages[i];
+			if (!msg || msg.role !== "assistant") continue;
+			const text =
+				typeof msg.content === "string"
+					? msg.content
+					: (msg.content ?? [])
+							.filter((p): p is { type: string; text: string } => typeof p === "object" && p !== null && typeof p.text === "string")
+							.map((p) => p.text)
+							.join(" ");
+			if (text.trim() !== "") return text.trim();
+		}
+		return undefined;
+	}
 
 	const boardDeps = (): DashboardDeps => ({
 		entries: () => Array.from(entries.values()).map(entryView),
@@ -1639,14 +1668,15 @@ export default function (pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 
 	pi.registerCommand("envoy", {
-		description: "Open the live subagent dashboard (status, output, cost)",
+		description: "Open the fullscreen live subagent dashboard (status, output, cost)",
 		handler: async (_args, cmdCtx) => {
 			if (cmdCtx.mode === "tui") {
 				uiHost = cmdCtx;
 				updateEnvoyUI();
+				// Fullscreen: replaces the editor, so it is fixed to the terminal
+				// size (no overlay re-sizing) and the chat keeps running behind it.
 				await cmdCtx.ui.custom<null>(
 					(tui, theme, _keybindings, done) => makeDashboardComponent(boardDeps(), tui, theme as ThemeLike, () => done(null)),
-					{ overlay: true, overlayOptions: { width: "68%", anchor: "center", margin: 1 } },
 				);
 				return;
 			}

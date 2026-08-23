@@ -1,26 +1,27 @@
 /**
- * Live subagent dashboard component for the pi TUI.
+ * Fullscreen subagent dashboard for the pi TUI.
  *
- * Opened from the `/envoy` command as an overlay (`ctx.ui.custom(..., {
- * overlay: true })`). Shows running/queued/finished children with age and
- * cost, refreshes every second, and can drill into one child's bus output /
- * transcript, or kill a rogue child.
+ * Opened from the `/envoy` command via `ui.custom` (no overlay → replaces the
+ * editor, i.e. fullscreen). Fixed to the terminal window: the frame spans the
+ * full width and the content fills it, so it never re-sizes on its own.
  *
- * Renders as a framed popup (top + bottom DynamicBorder, distinct background)
- * via a Container, per pi's documented custom-UI pattern — so it reads as a
- * real popup, not a same-color region, and re-renders cleanly when the chat
- * behind it updates.
+ * Shows running/queued/finished children with name, model, thinking level,
+ * tokens in/out, cost and age; a live activity feed streams the most recent
+ * line from every running child; and you can drill into a child's bus output
+ * / transcript or kill it (x → y/n).
  */
 
-import { Box, Key, matchesKey, type Component, Container, Text, type TUI } from "@earendil-works/pi-tui";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, type Component, Text, type TUI } from "@earendil-works/pi-tui";
 
 import type { BusMessage } from "./types.ts";
 import {
 	dashboardData,
 	fmtAge,
 	fmtCost,
+	fmtModel,
 	fmtShortId,
+	fmtThinking,
+	fmtTokens,
 	killLabel,
 	stateToken,
 	truncate,
@@ -49,7 +50,7 @@ export interface DashboardDeps {
 }
 
 
-/** Cap displayed rows per section so the overlay stays legible. */
+/** Cap displayed rows per section so the dashboard stays legible. */
 const MAX_RUNNING = 8;
 const MAX_QUEUED = 4;
 const MAX_FINISHED = 6;
@@ -58,6 +59,28 @@ interface RowLine {
 	id: string;
 	label: string;
 	token: string;
+}
+
+/** Fixed column widths for the compact per-child row (keeps the layout stable). */
+const COL = {
+	name: 16,
+	model: 14,
+	think: 5,
+	tok: 7,
+	cost: 8,
+	age: 7,
+} as const;
+
+/** Compact one-line summary of a child's live usage + identity. */
+export function compactRowLabel(e: DashboardRow): string {
+	const name = e.name.slice(0, COL.name).padEnd(COL.name);
+	const model = fmtModel(e.model).slice(0, COL.model).padEnd(COL.model);
+	const think = fmtThinking(e.thinking).padStart(COL.think);
+	const up = fmtTokens(e.input).padStart(COL.tok);
+	const down = fmtTokens(e.output).padStart(COL.tok);
+	const cost = fmtCost(e.cost).padStart(COL.cost);
+	const age = fmtAge(e.ageMs).padStart(COL.age);
+	return `${name} ${model} ${think} ↑${up} ↓${down} ${cost} ${age}`;
 }
 
 export function makeDashboardComponent(
@@ -73,9 +96,9 @@ export function makeDashboardComponent(
 	let outLoading = false;
 	let outOffset = 0;
 
-	const borderColor = (s: string): string => theme.fg("border", s);
+	const border = (s: string): string => theme.fg("border", s);
 	const title = (s: string): string => theme.fg("accent", theme.bold(s));
-	const body = (s: string): string => theme.fg("muted", s);
+	const header = (s: string): string => theme.fg("muted", theme.bold(s));
 
 	const stateLabel = (e: DashboardRow): string => (e.outcome ?? e.state).toString();
 
@@ -86,9 +109,7 @@ export function makeDashboardComponent(
 			// overlay may already be gone — ignore
 		}
 	};
-	// Refresh once per second only while there are children to watch; when the
-	// registry is idle the popup is static, so we avoid fighting background
-	// re-renders of the chat behind the overlay.
+	// Refresh once per second while there are children or a view is open.
 	const timer = setInterval(() => {
 		const d = dashboardData(deps.entries());
 		if (d.totals.running + d.totals.queued + d.totals.finished > 0 || mode !== "list") {
@@ -96,19 +117,12 @@ export function makeDashboardComponent(
 		}
 	}, 1000);
 
-	const rowLabel = (e: DashboardRow): string => {
-		const age = fmtAge(e.ageMs).padStart(6);
-		const cost = fmtCost(e.cost).padStart(7);
-		const summary = truncate(e.summary || stateLabel(e), 48);
-		return `${e.name.padEnd(18)} ${age} ${cost}  ${summary}`;
-	};
-
 	const listRows = (): RowLine[] => {
 		const d = dashboardData(deps.entries());
 		const rows: RowLine[] = [];
 		const take = (list: DashboardRow[], max: number): void => {
 			for (const r of list.slice(0, max)) {
-				rows.push({ id: r.id, label: rowLabel(r), token: stateToken(r.state) });
+				rows.push({ id: r.id, label: compactRowLabel(r), token: stateToken(r.state) });
 			}
 		};
 		take(d.running, MAX_RUNNING);
@@ -174,7 +188,7 @@ export function makeDashboardComponent(
 		const out: string[] = [truncate(head, width), ""];
 
 		const section = (name: string, rowsSlice: RowLine[], start: number, token: string): void => {
-			out.push(theme.fg(token, theme.bold(name)));
+			out.push(header(name));
 			for (let i = 0; i < rowsSlice.length; i++) {
 				const r = rowsSlice[i]!;
 				const idx = start + i;
@@ -187,6 +201,15 @@ export function makeDashboardComponent(
 
 		const runEnd = sectionStarts[1] ?? 0;
 		const finStart = sectionStarts[2] ?? 0;
+		out.push(
+			truncate(
+				theme.fg(
+					"dim",
+					`${"name".padEnd(COL.name)} ${"model".padEnd(COL.model)} ${"think".padStart(COL.think)} ${"↑in".padStart(COL.tok)} ${"↓out".padStart(COL.tok)} ${"cost".padStart(COL.cost)} ${"age".padStart(COL.age)}`,
+				),
+				width,
+			),
+		);
 		section("RUNNING", rows.slice(0, runEnd), 0, "accent");
 		section("QUEUED", rows.slice(runEnd, finStart), runEnd, "muted");
 		section("FINISHED", rows.slice(finStart), finStart, "dim");
@@ -199,22 +222,36 @@ export function makeDashboardComponent(
 			if (killed) out.push(theme.fg("warning", `⚠ ${selRow.label} — ${killed}`));
 		}
 
+		// Live activity feed: the most recent line from each running child.
+		const active = d.running.filter((r) => r.lastActivity && r.lastActivity.trim() !== "");
+		if (active.length > 0) {
+			out.push("", header("LIVE ACTIVITY"));
+			for (const r of active.slice(0, 5)) {
+				const line = truncate(`${r.name}: ${r.lastActivity!.trim().replace(/\s+/g, " ")}`, width - 4);
+				out.push(theme.fg("muted", line));
+			}
+		}
+
 		out.push(theme.fg("dim", "↑/↓ select · enter output · v transcript · x kill · esc close"));
 		return out;
 	};
 
+	/** Frame content lines with a full box (4 sides) at the given width. */
+	const frame = (content: string[], width: number): string[] => {
+		const inner = Math.max(1, width - 2);
+		const top = border("┌" + "─".repeat(inner) + "┐");
+		const bottom = border("└" + "─".repeat(inner) + "┘");
+		const framed = content.map((line) => {
+			const pad = truncate(line, inner).padEnd(inner);
+			return border("│") + pad + border("│");
+		});
+		return [top, ...framed, bottom];
+	};
+
 	return {
 		render(width: number): string[] {
-			// Frame the popup: border top, content (on a distinct bg), border bottom.
-			const container = new Container();
-			container.addChild(new DynamicBorder(borderColor));
-			const bg = new Box(1, 0, (s: string) => theme.bg("customMessageBg", s));
-			for (const line of contentLines(Math.max(10, width - 2))) {
-				bg.addChild(new Text(line, 0, 0));
-			}
-			container.addChild(bg);
-			container.addChild(new DynamicBorder(borderColor));
-			return container.render(width);
+			const content = contentLines(Math.max(10, width - 2));
+			return frame(content, width);
 		},
 
 		invalidate(): void {
