@@ -3,13 +3,17 @@
  *
  * Opened from the `/envoy` command as an overlay (`ctx.ui.custom(..., {
  * overlay: true })`). Shows running/queued/finished children with age and
- * cost, refreshes every second, and can drill into one child's bus output.
+ * cost, refreshes every second, and can drill into one child's bus output /
+ * transcript, or kill a rogue child.
  *
- * Renders as a plain component `{ render, invalidate, handleInput, dispose }`
- * per pi's custom-UI contract — no framework classes.
+ * Renders as a framed popup (top + bottom DynamicBorder, distinct background)
+ * via a Container, per pi's documented custom-UI pattern — so it reads as a
+ * real popup, not a same-color region, and re-renders cleanly when the chat
+ * behind it updates.
  */
 
-import { Key, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Box, Key, matchesKey, type Component, Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 
 import type { BusMessage } from "./types.ts";
 import {
@@ -27,6 +31,7 @@ import {
 export interface ThemeLike {
 	fg(token: string, text: string): string;
 	bold(text: string): string;
+	bg(token: string, text: string): string;
 }
 
 export interface DashboardDeps {
@@ -67,6 +72,10 @@ export function makeDashboardComponent(
 	let outLines: string[] = [];
 	let outLoading = false;
 	let outOffset = 0;
+
+	const borderColor = (s: string): string => theme.fg("border", s);
+	const title = (s: string): string => theme.fg("accent", theme.bold(s));
+	const body = (s: string): string => theme.fg("muted", s);
 
 	const stateLabel = (e: DashboardRow): string => (e.outcome ?? e.state).toString();
 
@@ -128,69 +137,80 @@ export function makeDashboardComponent(
 
 	const openOutput = (id: string): Promise<void> => loadView(id, "output");
 
+	/** Build the popup's inner content lines for the current mode. */
+	const contentLines = (width: number): string[] => {
+		if (mode !== "list") {
+			if ("confirmKill" in mode) {
+				const name = deps.nameOf(mode.confirmKill);
+				return [
+					truncate(`${title("envoy · kill")} ${theme.fg("dim", name)}  ${theme.fg("warning", "terminate this subagent? (y/n)")}`, width),
+				];
+			}
+			const id = mode.id;
+			const name = deps.nameOf(id);
+			const viewLabel = mode.view === "transcript" ? "transcript" : "output";
+			const head = `${title(`envoy · ${viewLabel}`)} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
+			const bodyLines = outLoading
+				? [theme.fg("muted", "loading…")]
+				: outLines.slice(outOffset, outOffset + 20).map((l) => truncate(l, width));
+			return [truncate(head, width), "", ...bodyLines];
+		}
+
+		const rows = listRows();
+		const d = dashboardData(deps.entries());
+		const t = d.totals;
+		const head = `${title("envoy · live subagents")}   ${theme.fg(
+			"muted",
+			`${t.running} running · ${t.queued} queued · ${t.finished} finished · ${fmtCost(t.costUsd)} session cost`,
+		)}`;
+		const out: string[] = [truncate(head, width), ""];
+
+		const section = (name: string, rowsSlice: RowLine[], start: number, token: string): void => {
+			out.push(theme.fg(token, theme.bold(name)));
+			for (let i = 0; i < rowsSlice.length; i++) {
+				const r = rowsSlice[i]!;
+				const idx = start + i;
+				const cursor = idx === selected ? "› " : "  ";
+				const label = idx === selected ? theme.fg("accent", theme.bold(r.label)) : theme.fg(r.token, r.label);
+				out.push(truncate(cursor + label, width));
+			}
+			out.push("");
+		};
+
+		const runEnd = sectionStarts[1] ?? 0;
+		const finStart = sectionStarts[2] ?? 0;
+		section("RUNNING", rows.slice(0, runEnd), 0, "accent");
+		section("QUEUED", rows.slice(runEnd, finStart), runEnd, "muted");
+		section("FINISHED", rows.slice(finStart), finStart, "dim");
+
+		// Kill attribution for the selected finished row, if any.
+		const selRow = rows[selected];
+		if (selRow) {
+			const finishedRow = Array.from(d.finished).find((f) => f.id === selRow.id);
+			const killed = finishedRow ? killLabel(finishedRow.killReason) : null;
+			if (killed) out.push(theme.fg("warning", `⚠ ${selRow.label} — ${killed}`));
+		}
+
+		out.push(theme.fg("dim", "↑/↓ select · enter output · v transcript · x kill · esc close"));
+		return out;
+	};
+
 	return {
 		render(width: number): string[] {
-			if (mode !== "list") {
-				if ("confirmKill" in mode) {
-					const name = deps.nameOf(mode.confirmKill);
-					return [
-						truncate(
-							`${theme.fg("toolTitle", theme.bold("envoy · kill"))} ${theme.fg("dim", name)}  ${theme.fg("warning", "terminate this subagent? (y/n)")}`,
-							width,
-						),
-					];
-				}
-				const id = mode.id;
-				const name = deps.nameOf(id);
-				const viewLabel = mode.view === "transcript" ? "transcript" : "output";
-				const head = `${theme.fg("toolTitle", theme.bold(`envoy · ${viewLabel}`))} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
-				const body = outLoading
-					? [theme.fg("muted", "loading…")]
-					: outLines.slice(outOffset, outOffset + 20).map((l) => truncate(l, width));
-				return [truncate(head, width), "", ...body];
+			// Frame the popup: border top, content (on a distinct bg), border bottom.
+			const container = new Container();
+			container.addChild(new DynamicBorder(borderColor));
+			const bg = new Box(1, 0, (s: string) => theme.bg("customMessageBg", s));
+			for (const line of contentLines(Math.max(10, width - 2))) {
+				bg.addChild(new Text(line, 0, 0));
 			}
-
-			const rows = listRows();
-			const d = dashboardData(deps.entries());
-			const t = d.totals;
-			const title = `${theme.fg("toolTitle", theme.bold("envoy · live subagents"))}   ${theme.fg(
-				"muted",
-				`${t.running} running · ${t.queued} queued · ${t.finished} finished · ${fmtCost(t.costUsd)} session cost`,
-			)}`;
-			const out: string[] = [truncate(title, width), ""];
-
-			const section = (name: string, rowsSlice: RowLine[], start: number, token: string): void => {
-				out.push(theme.fg(token, theme.bold(name)));
-				for (let i = 0; i < rowsSlice.length; i++) {
-					const r = rowsSlice[i]!;
-					const idx = start + i;
-					const cursor = idx === selected ? "› " : "  ";
-					const label = idx === selected ? theme.fg("accent", theme.bold(r.label)) : theme.fg(r.token, r.label);
-					out.push(truncate(cursor + label, width));
-				}
-				out.push("");
-			};
-
-			const runEnd = sectionStarts[1] ?? 0;
-			const finStart = sectionStarts[2] ?? 0;
-			section("RUNNING", rows.slice(0, runEnd), 0, "accent");
-			section("QUEUED", rows.slice(runEnd, finStart), runEnd, "muted");
-			section("FINISHED", rows.slice(finStart), finStart, "dim");
-
-			// Kill attribution for the selected finished row, if any.
-			const selRow = rows[selected];
-			if (selRow) {
-				const finishedRow = Array.from(d.finished).find((f) => f.id === selRow.id);
-				const killed = finishedRow ? killLabel(finishedRow.killReason) : null;
-				if (killed) out.push(theme.fg("warning", `⚠ ${selRow.label} — ${killed}`));
-			}
-
-			out.push(theme.fg("dim", "↑/↓ select · enter output · v transcript · x kill · esc close"));
-			return out;
+			container.addChild(bg);
+			container.addChild(new DynamicBorder(borderColor));
+			return container.render(width);
 		},
 
 		invalidate(): void {
-			// no cached state to clear; next render recomputes from deps
+			// stateless render — nothing cached
 		},
 
 		async handleInput(data: string): Promise<void> {
