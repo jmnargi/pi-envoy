@@ -32,55 +32,62 @@ the extension, called `subagent_spawn`, spawned a real child `pi` process
 
 ## Install
 
+Install-and-run: **no configuration, no profiles, no personas needed.** The
+plugin ships a built-in task subagent, so the model can delegate the moment
+the extension is loaded.
+
 The extension is a plain TypeScript module with a `pi.extensions` manifest
 (`package.json`). Install it however you install pi extensions:
 
-**Option A — copy into the auto-discovery directory**
+**Option A — package distribution (recommended)**
+
+```bash
+pi install git:github.com/jmnargi/pi-envoy   # or: pi install npm:<pkg>
+```
+
+That clones the package into `~/.pi/agent/git/…`, installs its deps, and
+registers it. Re-run `pi update --extensions` to pull newer commits.
+
+**Option B — copy into the auto-discovery directory**
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/pi-envoy
 cp -r src agents package.json tsconfig.json ~/.pi/agent/extensions/pi-envoy/
-cd ~/.pi/agent/extensions/pi-envoy && npm install   # resolves "typebox"
+cd ~/.pi/agent/extensions/pi-envoy && npm install
 ```
 
-Then start pi (or `/reload` in an interactive session). You should see
-`pi-envoy ready (depth 0)` on `session_start`.
-
-**Option B — one-off with a CLI flag**
+**Option C — one-off with a CLI flag**
 
 ```bash
 pi -e /path/to/pi-envoy/src/index.ts
 ```
 
-**Option C — package distribution**
-
-```bash
-pi install npm:<pkg>   # or: pi install git:github.com/<you>/pi-envoy
-```
+Then start pi (or `/reload`). You should see `pi-envoy ready (depth 0)` on
+`session_start`; the bundled profiles (`worker`, `scout`, `planner`,
+`reviewer`) are copied into `~/.pi/agent/agents/` on first run (your own
+profiles are never overwritten).
 
 > **Security:** extensions run with your full system permissions and can
 > execute arbitrary code ([pi docs](https://pi.dev/docs/latest/extensions)).
 > Only install from sources you trust. The same is true for each subagent this
 > plugin spawns — see [Security model](#security-model).
 
-After install, register sample agent profiles:
-
-```bash
-mkdir -p ~/.pi/agent/agents
-cp agents/*.md ~/.pi/agent/agents/
-```
-
 ## Quick start
 
-In a pi session, ask the model to delegate:
+In a pi session, ask the model to delegate — no setup required:
 
 ```
-Use subagent_spawn to have the worker agent list all TODO markers in this repo
-and propose a cleanup plan.
+Use subagent_spawn to list all TODO markers in this repo and propose a
+cleanup plan. Wait for it.
 ```
 
-The model will call `subagent_spawn`, then `subagent_wait`, and report the
-child's summary, usage and verification result. To watch a long-running child:
+The model calls `subagent_spawn` (with no `agent` — the built-in task
+subagent is used), then `subagent_wait`, and reports the child's summary,
+usage and verification result. Every spawned child gets a **Delegation
+Contract** telling it its task, allowed tools, acceptance criteria and how to
+message the parent above / siblings below it — no extra guidance needed.
+
+To watch a long-running child:
 
 ```
 Start subagent_xyz in the background and tell me when it's done.
@@ -92,7 +99,7 @@ which yields `subagent_spawn { wait: false }` → `subagent_wait { ids: [...] }`
 
 | Tool | Purpose |
 |------|---------|
-| `subagent_spawn` | Delegate a task to a child `pi` process with a formal contract. Returns an id; `wait: true` blocks and returns the full result. |
+| `subagent_spawn` | Delegate a task to a child `pi` process with a formal contract. `agent` is optional (built-in task subagent by default); `wait: true` blocks and returns the full result. |
 | `subagent_wait` | **The wait-on-one primitive.** Blocks until the listed children settle (or the timeout fires); `all: false` returns on the first to settle. |
 | `subagent_status` | Registry summary, or one child's full record (use `all: false`-style polling). |
 | `subagent_messages` | Read the bus: a child's OUTBOX (progress/checkpoints) or your own inbox (steering/questions). Optional `since` (epoch ms) and `kind` filters. |
@@ -184,7 +191,7 @@ and bus traffic between live children (unit-tested only).
 ```
 parent pi process (this extension)
    │  subagent_spawn
-   │    ├─ resolve agent profile (agents/*.md frontmatter)
+   │    ├─ resolve agent (explicit profile → bundled → built-in "task" default)
    │    ├─ [worktree]  git worktree add -b subagent/<id> <dataDir>/worktrees/<repo>-<id>
    │    ├─ contract    delegation contract ⇢ tmp/contract-<id>.md
    │    ├─ spawn       pi --mode json -p --no-session [--model|--thinking] [--tools …]
@@ -263,8 +270,14 @@ contains:
 
 ## Agent profiles
 
-Agents are markdown files with YAML frontmatter, discovered from
-`~/.pi/agent/agents/*.md`:
+**You don't need any.** `subagent_spawn` defaults to a built-in task subagent
+when you omit `agent`. It ships a system prompt telling the child it is a
+subagent, how to execute the contract, and how to message the parent above /
+siblings below it.
+
+Profiles are optional, for a named persona with its own toolset. They're
+markdown files with YAML frontmatter, discovered from (in order) the user
+agents dir, the package's bundled `agents/` dir, then the built-in default:
 
 ```markdown
 ---
@@ -283,8 +296,11 @@ System prompt for the agent lives here.
   not loaded, so a child of an untrusted repo can never inherit repo-controlled
   system prompts. `discoverAgents(cwd, "both")` exists in `src/agents.ts` for
   explicit opt-in by a future version.
-- Built-in samples: `scout` (recon), `planner` (plans), `worker`
-  (general-purpose, full tools — the default), `reviewer` (code review).
+- Bundled samples: `scout` (recon), `planner` (plans), `worker`
+  (general-purpose, full tools), `reviewer` (code review). These are copied
+  into `~/.pi/agent/agents/` on first run; an agent you already own with the
+  same name is never overwritten. Omit `agent` entirely to use the built-in
+  `task` subagent without any file.
 
 ## Security model
 

@@ -38,8 +38,8 @@ export interface SpawnedChild {
  * model/thinking, tool controls, context inheritance, the contract file and
  * the objective text. Returns the argv array without the executable.
  */
-export function buildPiArgs(args: { spec: TaskSpec; contractFile: string; taskText: string }): string[] {
-	const { spec, contractFile, taskText } = args;
+export function buildPiArgs(args: { spec: TaskSpec; contractFile: string; taskText: string; systemPrompt?: string }): string[] {
+	const { spec, contractFile, taskText, systemPrompt } = args;
 	const argv = ["--mode", "json", "-p", "--no-session"];
 
 	if (spec.model) {
@@ -67,7 +67,9 @@ export function buildPiArgs(args: { spec: TaskSpec; contractFile: string; taskTe
 		argv.push("--no-context-files");
 	}
 
+	// Contract first, then the profile's role/behavior prompt.
 	argv.push("--append-system-prompt", contractFile, taskText);
+	if (systemPrompt) argv.push("--append-system-prompt", systemPrompt);
 	return argv;
 }
 
@@ -106,17 +108,19 @@ export function spawnChild(args: {
 	ctx: ParentContext;
 	cwd: string;
 	contractFile: string;
+	systemPrompt?: string;
 	commandOverride?: { command: string; args: string[] };
 	onMessage?: (event: unknown) => void;
 	onExit?: (code: number | null) => void;
 	timeoutMs?: number;
 }): SpawnedChild {
-	const { id, spec, ctx, cwd, contractFile, commandOverride, onMessage, onExit, timeoutMs } = args;
+	const { id, spec, ctx, cwd, contractFile, systemPrompt, commandOverride, onMessage, onExit, timeoutMs } = args;
 	const group = spec.group ?? ctx.group;
 	const env: NodeJS.ProcessEnv = { ...process.env, ...buildChildEnv(ctx, id, group) };
 
 	const invocation =
-		commandOverride ?? getPiInvocation(buildPiArgs({ spec, contractFile, taskText: `Task: ${spec.objective}` }));
+		commandOverride ??
+		getPiInvocation(buildPiArgs({ spec, contractFile, taskText: `Task: ${spec.objective}`, systemPrompt }));
 
 	const proc = spawn(invocation.command, invocation.args, {
 		cwd,

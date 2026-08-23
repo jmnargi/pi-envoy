@@ -30,7 +30,8 @@ import { appendOutcome, reputation } from "./ledger.ts";
 import { createWorktree, mergeBack, prune, removeWorktree } from "./worktrees.ts";
 import { buildContractText, runVerify, writeContractFile } from "./contract.ts";
 import { type SpawnedChild, spawnChild } from "./spawn.ts";
-import { discoverAgents } from "./agents.ts";
+import { discoverAgents, discoverBundledAgents, defaultTaskAgent } from "./agents.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { INTERJECT_POLL_MS, formatInjectedMessage, injectableKind, readNewInbox } from "./interject.ts";
 import { Text, type Component } from "@earendil-works/pi-tui";
 
@@ -51,6 +52,7 @@ import type {
 	VerifyResult,
 	WorktreeInfo,
 } from "./types.ts";
+import { DEFAULT_AGENT } from "./types.ts";
 
 /** Read-only toolset applied under `readOnly` (§4.7 privilege attenuation). */
 const READ_ONLY_TOOLS: readonly string[] = ["read", "grep", "glob", "find", "ls"];
@@ -118,6 +120,8 @@ interface ChildEntry {
 	outbox: string;
 	inbox: string;
 	group: string;
+	/** Profile system prompt to append to the child's prompt. */
+	systemPrompt: string;
 	contractFile: string;
 	queuedAt: number;
 	startedAt: number;
@@ -146,6 +150,8 @@ interface ChildEntry {
 interface PreparedChild {
 	profile: AgentProfile;
 	spec: TaskSpec;
+	/** Profile system prompt to append to the child's prompt (role/behavior). */
+	systemPrompt: string;
 	cwd: string;
 	worktree: WorktreeInfo | undefined;
 	contractFile: string;
@@ -380,12 +386,50 @@ export default function (pi: ExtensionAPI): void {
 	// Child lifecycle
 	// ------------------------------------------------------------------
 
+	/** Copy bundled agent profiles into the user agents dir (idempotent). */
+	function ensureBundledAgentsInstalled(): void {
+		try {
+			const bundled = discoverBundledAgents();
+			if (bundled.length === 0) return;
+			const agentsDir = path.join(getAgentDir(), "agents");
+			fs.mkdirSync(agentsDir, { recursive: true });
+			for (const profile of bundled) {
+				// Only add a bundled profile when the user does not already have
+				// an agent of the same name — never clobber a user's own agent.
+				const target = path.join(agentsDir, `${profile.name}.md`);
+				if (fs.existsSync(target)) continue;
+				const frontmatter = [
+					"---",
+					`name: ${profile.name}`,
+					`description: ${profile.description}`,
+					"---",
+					"",
+				].join("\n");
+				fs.writeFileSync(target, frontmatter + profile.systemPrompt);
+			}
+		} catch {
+			// best-effort; bundled profiles are still discoverable from the package
+		}
+	}
+
 	async function prepareChild(id: string, spec: TaskSpec): Promise<PreparedChild> {
-		const discovery = discoverAgents(process.cwd(), "user");
-		const profile = discovery.agents.find((a) => a.name === spec.agent);
+		// Resolve the agent profile: an explicit name wins; otherwise the
+		// built-in task agent. Sources, in order: user agents dir, the
+		// package's bundled agents dir, then the built-in default.
+		const resolvedAgent = spec.agent.trim() !== "" ? spec.agent : DEFAULT_AGENT;
+		let profile = discoverAgents(process.cwd(), "user").agents.find((a) => a.name === resolvedAgent);
 		if (!profile) {
-			const available = discovery.agents.map((a) => a.name).join(", ") || "none";
-			throw new Error(`unknown agent "${spec.agent}". Available agents: ${available}`);
+			profile = discoverBundledAgents().find((a) => a.name === resolvedAgent);
+		}
+		if (!profile) {
+			if (resolvedAgent === DEFAULT_AGENT) {
+				profile = defaultTaskAgent();
+			} else {
+				const available = discoverAgents(process.cwd(), "user").agents.map((a) => a.name).join(", ") || "none";
+				throw new Error(
+					`unknown agent "${spec.agent}". Available agents: ${available} (or omit agent to use the built-in "${DEFAULT_AGENT}" task agent)`,
+				);
+			}
 		}
 		if (ctx.depth >= ctx.maxDepth) {
 			throw new Error(`max submission depth reached (${ctx.maxDepth})`);
@@ -438,7 +482,7 @@ export default function (pi: ExtensionAPI): void {
 			}),
 		);
 
-		return { profile, spec: effectiveSpec, cwd: childCwd, worktree, contractFile, outbox: childOutbox, inbox, group };
+		return { profile, spec: effectiveSpec, systemPrompt: profile.systemPrompt, cwd: childCwd, worktree, contractFile, outbox: childOutbox, inbox, group };
 	}
 
 	function makeEntry(id: string, prepared: PreparedChild): ChildEntry {
@@ -460,6 +504,7 @@ export default function (pi: ExtensionAPI): void {
 			outbox: prepared.outbox,
 			inbox: prepared.inbox,
 			group: prepared.group,
+			systemPrompt: prepared.systemPrompt,
 			contractFile: prepared.contractFile,
 			queuedAt: now,
 			startedAt: 0,
@@ -505,6 +550,7 @@ export default function (pi: ExtensionAPI): void {
 				ctx,
 				cwd: entry.cwd,
 				contractFile: entry.contractFile,
+				systemPrompt: entry.systemPrompt,
 				onMessage: (evt) => handleEvent(entry, evt),
 				onExit: (code) => {
 					void finalizeChild(entry, code);
@@ -943,6 +989,7 @@ export default function (pi: ExtensionAPI): void {
 		label: "Spawn Subagent",
 		promptSnippet: "Delegate substantial work to an isolated pi subagent (contract first)",
 		promptGuidelines: [
+			"subagent_spawn: no setup required — omit agent to use the built-in task subagent, which is already told how the delegation contract and bus messaging work.",
 			"subagent_spawn: write the objective and acceptance criteria as a precise contract, then delegate — contract clarity is the single biggest quality lever.",
 			"subagent_spawn: delegate only substantial work; a child costs a full model invocation, so trivial questions are faster handled inline (§4.4).",
 			"subagent_spawn: use wait=true to block for the result, or spawn in the background and call subagent_wait later; add a verify command when the outcome must be exact.",
@@ -950,7 +997,7 @@ export default function (pi: ExtensionAPI): void {
 		],
 		description: [
 			"Delegate a substantial task to a background pi subagent with its own isolated context, running as a separate process.",
-			"Agent profiles are loaded from the user agents directory only in v1 (project agents in .pi/agents require explicit opt-in and are NOT used).",
+			"Zero configuration: omit the agent to use the built-in task subagent (executes one contract, can message the parent and siblings). Profiles are optional; you never need to create one.",
 			"Only delegate substantial work: spawning a child costs a full model invocation, so trivial questions cost more than they save (paper §4.4).",
 			"Set wait=true to block until completion (capped at timeoutMs or 120s) and receive the full result; otherwise start in the background and call subagent_wait with the returned id.",
 			"readOnly children get a read-only toolset and can never spawn; autonomy='open' lets the child recursively delegate (bounded by maxDepth).",
@@ -958,7 +1005,7 @@ export default function (pi: ExtensionAPI): void {
 			"worktree=true (or plugin defaultWorktree) isolates the child in a fresh git worktree; mergeBack merges its branch into the main branch on success.",
 		].join(" "),
 		parameters: Type.Object({
-			agent: Type.String({ description: "Agent profile name (agents/*.md)" }),
+			agent: Type.Optional(Type.String({ description: "Agent profile name; omit to use the built-in task agent" })),
 			objective: Type.String({ description: "The task to execute; clarity of intent is the single biggest quality lever" }),
 			acceptance: Type.Optional(Type.Array(Type.String({ description: "Acceptance criterion" }))),
 			verify: Type.Optional(Type.String({ description: "Shell command run after completion to verify the outcome (only when config allowVerify)" })),
@@ -981,12 +1028,11 @@ export default function (pi: ExtensionAPI): void {
 		}),
 
 		async execute(_toolCallId, params, _signal, onUpdate, _toolCtx) {
-			if (!params.agent.trim()) throw new Error("agent must not be empty");
 			if (!params.objective.trim()) throw new Error("objective must not be empty");
 
 			const id = generateId();
 			const spec: TaskSpec = {
-				agent: params.agent,
+				agent: params.agent ?? DEFAULT_AGENT,
 				objective: params.objective,
 				acceptance: params.acceptance,
 				verify: config.allowVerify ? params.verify : undefined,
@@ -1511,6 +1557,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, eventCtx) => {
 		startInterjectWatcher();
+		ensureBundledAgentsInstalled();
 		uiHost = eventCtx;
 		updateEnvoyUI();
 		if (ctx.id === null && eventCtx.hasUI) {

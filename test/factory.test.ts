@@ -89,11 +89,12 @@ describe("extension factory surface", () => {
 		const fake = makeFakePi();
 		makeEnvoy(fake.pi);
 		const spawn = fake.tools.find((t) => t.name === "subagent_spawn");
-		expect(spawn?.promptGuidelines).toHaveLength(4);
+		expect(spawn?.promptGuidelines).toHaveLength(5);
 		for (const g of spawn?.promptGuidelines ?? []) {
 			expect(g.startsWith("subagent_spawn:")).toBe(true);
 		}
 		const joined = spawn?.promptGuidelines?.join(" ") ?? "";
+		expect(joined).toContain("no setup required");
 		expect(joined).toContain("precise contract");
 		expect(joined).toContain("untrusted data");
 		expect(joined).toContain("wait=true");

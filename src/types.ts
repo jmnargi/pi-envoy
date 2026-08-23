@@ -68,7 +68,7 @@ export interface Usage {
  * monitoring cadence are negotiated at spawn time.
  */
 export interface TaskSpec {
-	/** Agent profile name (agents/*.md frontmatter `name`). */
+	/** Agent profile name (agents/*.md frontmatter `name`); empty/omitted uses the built-in task agent. */
 	agent: string;
 	/** The objective. Clarity of intent (§2.1). */
 	objective: string;
@@ -383,7 +383,7 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
-export const DEFAULT_AGENT = "worker";
+export const DEFAULT_AGENT = "task";
 
 /** src/agents.ts */
 export interface AgentsModule {
