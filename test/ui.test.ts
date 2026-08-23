@@ -15,8 +15,10 @@ import {
 	killLabel,
 	stateToken,
 	truncate,
+	type DashboardRow,
 	type EntryView,
 } from "../src/ui.ts";
+import { compactRowLabel } from "../src/dashboard.ts";
 
 const viewDefaultUsage = { cost: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: 0, turns: 0 };
 
@@ -128,6 +130,38 @@ describe("fmtModel", () => {
 		expect(fmtModel("gpt-5-code")).toBe("gpt-5");
 		expect(fmtModel("claude-sonnet-latest")).toBe("claude-sonnet");
 		expect(fmtModel("gemini-pro")).toBe("gemini");
+	});
+});
+
+describe("compactRowLabel", () => {
+	test("renders a fixed-width row with model/thinking/tokens/cost/age", () => {
+		const row: DashboardRow = {
+			id: "sa_2fc7ac2e5893",
+			shortId: "2fc7ac2e",
+			name: "api-refactor",
+			agent: "worker",
+			state: "running",
+			ageMs: 42_000,
+			cost: 0.0123,
+			input: 1234,
+			output: 567,
+			cacheRead: 0,
+			cacheWrite: 0,
+			contextTokens: 2048,
+			turns: 2,
+			model: "gpt-5-code",
+			thinking: "high",
+			summary: "",
+			outcome: null,
+		};
+		const label = compactRowLabel(row);
+		expect(label).toContain("api-refactor");
+		expect(label).toContain("gpt-5");
+		expect(label).toContain("hi"); // thinking
+		expect(label).toMatch(/↑\s*1\.2k/);
+		expect(label).toMatch(/↓\s*567/);
+		expect(label).toContain("$0.012");
+		expect(label).toContain("42s");
 	});
 });
 
