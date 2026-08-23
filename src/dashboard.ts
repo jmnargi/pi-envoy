@@ -3,7 +3,7 @@
  *
  * Opened from the `/envoy` command via `ui.custom` (no overlay → replaces the
  * editor, i.e. fullscreen). Fixed to the terminal window: the frame spans the
- * full width and the content fills it, so it never re-sizes on its own.
+ * full width and fills the height, so it never re-sizes on its own.
  *
  * Shows running/queued/finished children with name, model, thinking level,
  * tokens in/out, cost and age; a live activity feed streams the most recent
@@ -11,7 +11,7 @@
  * / transcript or kill it (x → y/n).
  */
 
-import { Key, matchesKey, type Component, Text, type TUI } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 
 import type { BusMessage } from "./types.ts";
 import {
@@ -24,7 +24,6 @@ import {
 	fmtTokens,
 	killLabel,
 	stateToken,
-	truncate,
 	type DashboardRow,
 	type EntryView,
 } from "./ui.ts";
@@ -102,6 +101,7 @@ export function makeDashboardComponent(
 
 	const stateLabel = (e: DashboardRow): string => (e.outcome ?? e.state).toString();
 
+	let lastSignature = "";
 	const refresh = (): void => {
 		try {
 			tui.requestRender();
@@ -109,10 +109,20 @@ export function makeDashboardComponent(
 			// overlay may already be gone — ignore
 		}
 	};
-	// Refresh once per second while there are children or a view is open.
+	/** Re-render only when something actually changed (kills the flicker):
+	 *  a cheap signature of registry state + activity, compared each tick. */
 	const timer = setInterval(() => {
 		const d = dashboardData(deps.entries());
-		if (d.totals.running + d.totals.queued + d.totals.finished > 0 || mode !== "list") {
+		const sig = [
+			d.totals.running,
+			d.totals.queued,
+			d.totals.finished,
+			d.totals.costUsd.toFixed(6),
+			...d.running.map((r) => `${r.id}:${Math.floor(r.ageMs / 1000)}:${fmtTokens(r.input)}:${fmtTokens(r.output)}:${r.lastActivity?.slice(0, 60) ?? ""}`),
+			mode !== "list" ? outOffset : "",
+		].join("|");
+		if (sig !== lastSignature) {
+			lastSignature = sig;
 			refresh();
 		}
 	}, 1000);
@@ -146,7 +156,7 @@ export function makeDashboardComponent(
 					? await deps.readTranscript(id)
 					: (await deps.readOutbox(id)).map((m) => {
 							const t = new Date(m.ts).toISOString().slice(11, 19);
-							return `[${t} ${m.from}→${m.to} ${m.kind}] ${truncate(m.text, 160)}`;
+							return `[${t} ${m.from}→${m.to} ${m.kind}] ${truncateToWidth(m.text, 160)}`;
 						});
 			outLines = lines.length > 0 ? lines : [view === "transcript" ? "(no transcript yet)" : "(no bus messages yet)"];
 			if (view === "output") outLines.push("", "— final summary —", deps.summaryOf(id) || "(no summary)");
@@ -165,7 +175,7 @@ export function makeDashboardComponent(
 			if ("confirmKill" in mode) {
 				const name = deps.nameOf(mode.confirmKill);
 				return [
-					truncate(`${title("envoy · kill")} ${theme.fg("dim", name)}  ${theme.fg("warning", "terminate this subagent? (y/n)")}`, width),
+					truncateToWidth(`${title("envoy · kill")} ${theme.fg("dim", name)}  ${theme.fg("warning", "terminate this subagent? (y/n)")}`, width),
 				];
 			}
 			const id = mode.id;
@@ -174,8 +184,8 @@ export function makeDashboardComponent(
 			const head = `${title(`envoy · ${viewLabel}`)} ${theme.fg("dim", name)}  ${theme.fg("dim", "esc back · ↑/↓ scroll")}`;
 			const bodyLines = outLoading
 				? [theme.fg("muted", "loading…")]
-				: outLines.slice(outOffset, outOffset + 20).map((l) => truncate(l, width));
-			return [truncate(head, width), "", ...bodyLines];
+				: outLines.slice(outOffset, outOffset + 20).map((l) => truncateToWidth(l, width));
+			return [truncateToWidth(head, width), "", ...bodyLines];
 		}
 
 		const rows = listRows();
@@ -185,7 +195,7 @@ export function makeDashboardComponent(
 			"muted",
 			`${t.running} running · ${t.queued} queued · ${t.finished} finished · ${fmtCost(t.costUsd)} session cost`,
 		)}`;
-		const out: string[] = [truncate(head, width), ""];
+		const out: string[] = [truncateToWidth(head, width), ""];
 
 		const section = (name: string, rowsSlice: RowLine[], start: number, token: string): void => {
 			out.push(header(name));
@@ -194,7 +204,7 @@ export function makeDashboardComponent(
 				const idx = start + i;
 				const cursor = idx === selected ? "› " : "  ";
 				const label = idx === selected ? theme.fg("accent", theme.bold(r.label)) : theme.fg(r.token, r.label);
-				out.push(truncate(cursor + label, width));
+				out.push(truncateToWidth(cursor + label, width));
 			}
 			out.push("");
 		};
@@ -202,7 +212,7 @@ export function makeDashboardComponent(
 		const runEnd = sectionStarts[1] ?? 0;
 		const finStart = sectionStarts[2] ?? 0;
 		out.push(
-			truncate(
+			truncateToWidth(
 				theme.fg(
 					"dim",
 					`${"name".padEnd(COL.name)} ${"model".padEnd(COL.model)} ${"think".padStart(COL.think)} ${"↑in".padStart(COL.tok)} ${"↓out".padStart(COL.tok)} ${"cost".padStart(COL.cost)} ${"age".padStart(COL.age)}`,
@@ -227,7 +237,7 @@ export function makeDashboardComponent(
 		if (active.length > 0) {
 			out.push("", header("LIVE ACTIVITY"));
 			for (const r of active.slice(0, 5)) {
-				const line = truncate(`${r.name}: ${r.lastActivity!.trim().replace(/\s+/g, " ")}`, width - 4);
+				const line = truncateToWidth(`${r.name}: ${r.lastActivity!.trim().replace(/\s+/g, " ")}`, width - 4);
 				out.push(theme.fg("muted", line));
 			}
 		}
@@ -236,14 +246,17 @@ export function makeDashboardComponent(
 		return out;
 	};
 
-	/** Frame content lines with a full box (4 sides) at the given width. */
+	/** Frame content lines with a full box (4 sides) at the given width.
+	 *  Padding/truncation are ANSI-aware: escape codes don't count toward
+	 *  the width, so the right border sits at the true terminal edge. */
 	const frame = (content: string[], width: number): string[] => {
 		const inner = Math.max(1, width - 2);
 		const top = border("┌" + "─".repeat(inner) + "┐");
 		const bottom = border("└" + "─".repeat(inner) + "┘");
 		const framed = content.map((line) => {
-			const pad = truncate(line, inner).padEnd(inner);
-			return border("│") + pad + border("│");
+			const fitted = truncateToWidth(line, inner);
+			const pad = " ".repeat(Math.max(0, inner - visibleWidth(fitted)));
+			return border("│") + fitted + pad + border("│");
 		});
 		return [top, ...framed, bottom];
 	};

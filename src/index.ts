@@ -79,6 +79,12 @@ const IN_FLIGHT_STATES: readonly ChildState[] = ["queued", "starting", "running"
 interface PiEvent {
 	type?: string;
 	message?: PiMessage;
+	/** tool_execution_start / end payloads */
+	toolName?: string;
+	toolCallId?: string;
+	args?: unknown;
+	result?: { content?: Array<{ type?: string; text?: string }> };
+	isError?: boolean;
 }
 
 interface PiContentPart {
@@ -495,6 +501,17 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
+	/** Append a raw transcript line (role + text); used for tool events too. */
+	function appendTranscriptLine(entry: ChildEntry, role: string, text: string): void {
+		try {
+			if (!text || text.trim() === "") return;
+			const line = JSON.stringify({ role, ts: Date.now(), text: text.trim() });
+			fs.appendFileSync(transcriptPath(entry.id), line + "\n");
+		} catch {
+			// best-effort
+		}
+	}
+
 	// ------------------------------------------------------------------
 	// Child lifecycle
 	// ------------------------------------------------------------------
@@ -686,15 +703,28 @@ export default function (pi: ExtensionAPI): void {
 	function handleEvent(entry: ChildEntry, evt: unknown): void {
 		if (!evt || typeof evt !== "object") return;
 		const event = evt as PiEvent;
+
+		// Tool executions land in the transcript too (live "what is it doing").
+		if (event.type === "tool_execution_start") {
+			const argsText = event.args ? JSON.stringify(event.args) : "";
+			appendTranscriptLine(entry, "tool", `→ ${event.toolName ?? "tool"} ${truncate(argsText, 200)}`);
+			return;
+		}
+		if (event.type === "tool_execution_end") {
+			const text = (event.result?.content ?? [])
+				.filter((p): p is { type: string; text: string } => typeof p === "object" && p !== null && typeof p.text === "string")
+				.map((p) => p.text)
+				.join(" ");
+			appendTranscriptLine(entry, event.isError ? "tool-error" : "tool-result", `← ${event.toolName ?? "tool"} ${text.trim()}`);
+			return;
+		}
+
 		if (!event.message) return;
-		if (event.type !== "message_end" && event.type !== "tool_result_end") return;
-		entry.messages.push(event.message);
-		appendTranscript(entry, event.message);
-		if (event.type === "tool_result_end") return;
-
+		if (event.type !== "message_end") return;
 		const msg = event.message;
+		entry.messages.push(msg);
+		if (msg.role === "assistant" || msg.role === "user") appendTranscript(entry, msg);
 		if (msg.role !== "assistant") return;
-
 		entry.usage.turns += 1;
 		const u = msg.usage;
 		if (u) {
