@@ -14,19 +14,7 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 
 import type { BusMessage } from "./types.ts";
-import {
-	dashboardData,
-	fmtAge,
-	fmtCost,
-	fmtModel,
-	fmtShortId,
-	fmtThinking,
-	fmtTokens,
-	killLabel,
-	stateToken,
-	type DashboardRow,
-	type EntryView,
-} from "./ui.ts";
+import { dashboardData, fmtAge, fmtCost, fmtModel, fmtThinking, fmtTokens, killLabel, stateToken, type DashboardRow, type EntryView } from "./ui.ts";
 /** Structural stand-in for pi's Theme (kept internal to this file). */
 export interface ThemeLike {
 	fg(token: string, text: string): string;
@@ -265,14 +253,19 @@ export function makeDashboardComponent(
 		render(width: number): string[] {
 			const content = contentLines(Math.max(10, width - 2));
 
-			// Fixed size: fill the terminal's height so the panel never re-sizes.
-			// The help line is pinned to the bottom; blank filler goes between
-			// content and footer.
-			let height = 24;
+			// Fixed size: in fullscreen mode fill the terminal height (help line
+			// pinned to the bottom border); in regular mode the panel lives in
+			// the editor region, so keep it compact — content-sized with a cap —
+			// because a full-height block there forces re-layouts while the chat
+			// streams (the flicker).
+			const isFullscreen = tui.mode === "fullscreen";
+			let height = content.length + 2;
 			try {
 				const rows = tui.terminal?.rows;
-				if (typeof rows === "number" && Number.isFinite(rows) && rows > 4) {
-					height = Math.min(rows, Math.max(height, rows - 2));
+				if (isFullscreen && typeof rows === "number" && Number.isFinite(rows) && rows > 4) {
+					height = rows - 2;
+				} else if (!isFullscreen) {
+					height = Math.min(content.length + 2, 20);
 				}
 			} catch {
 				// terminal size unknown — fall back to content height

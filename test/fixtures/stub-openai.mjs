@@ -53,6 +53,11 @@ function textOf(m) {
 function planReply(msgs) {
 	const all = msgs.map(textOf).join("\n");
 	if (all.includes("Delegation Contract")) {
+		// ENVOY_SLOW_CHILD=1 makes the child hang so cancel/abort paths can be
+		// exercised manually (the request never completes).
+		if (process.env.ENVOY_SLOW_CHILD === "1") {
+			return null; // no reply — the HTTP request stays open
+		}
 		const sawTaskPrompt = /task subagent/i.test(all);
 		const didRead = msgs.some(
 			(m) => m.role === "tool" || (Array.isArray(m.content) && m.content.some((c) => c?.type === "toolResult")),
@@ -147,6 +152,10 @@ function handleRequest(req, res) {
 		}
 
 		const plan = planReply(msgs);
+		if (plan === null) {
+			// Hold the request open (never reply) — for manual abort testing.
+			return;
+		}
 		if (body.stream === true) {
 			streamReply(res, plan);
 		} else {

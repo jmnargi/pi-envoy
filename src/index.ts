@@ -968,19 +968,44 @@ export default function (pi: ExtensionAPI): void {
 		pump();
 	}
 
-	/** Await one child with a cap; on expiry return a partial result + note. */
-	async function awaitChild(entry: ChildEntry, capMs: number): Promise<ToolChildResult> {
+	/** Await one child with a cap; on expiry or abort return a partial + note.
+	 *  On abort, the waited child is killed and attributed to the user. */
+	async function awaitChild(entry: ChildEntry, capMs: number, signal?: AbortSignal): Promise<ToolChildResult> {
 		if (entry.settled && entry.result) return entry.result;
 		let timer: NodeJS.Timeout | undefined;
 		const sleeper = new Promise<"timeout">((resolve) => {
 			timer = setTimeout(() => resolve("timeout"), capMs);
 		});
+		const aborted = new Promise<"aborted">((resolve) => {
+			if (signal) {
+				if (signal.aborted) resolve("aborted");
+				else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+			}
+		});
 		const finished = await Promise.race([
 			entry.settlePromise.then(() => "done" as const),
 			sleeper,
+			aborted,
 		]);
-		if (timer) clearTimeout(timer);
+		clearTimeout(timer);
 		if (finished === "done" && entry.result) return entry.result;
+		if (finished === "aborted") {
+			// The user interrupted the main turn: stop the child we were waiting
+			// on and attribute the kill to the user, then return what we have.
+			if (!entry.settled && entry.killReason === null) entry.killReason = "cancelled";
+			if (!entry.settled) {
+				if (entry.state === "queued") {
+					const idx = queue.indexOf(entry);
+					if (idx >= 0) queue.splice(idx, 1);
+					active.delete(entry);
+					void finalizeChild(entry, null);
+				} else {
+					entry.runner?.kill("cancelled");
+				}
+			}
+			updateEnvoyUI();
+			return partialResult(entry, `wait interrupted by user; child ${entry.settled ? entry.state : "still running"} — poll subagent_status`);
+		}
 		return partialResult(entry, `wait timed out after ${capMs}ms; child still ${entry.state} — poll subagent_status`);
 	}
 
@@ -1205,7 +1230,7 @@ export default function (pi: ExtensionAPI): void {
 			wait: Type.Optional(Type.Boolean({ description: "Block until completion (capped at timeoutMs or 120s) and return the result" })),
 		}),
 
-		async execute(_toolCallId, params, _signal, onUpdate, _toolCtx) {
+		async execute(_toolCallId, params, signal, onUpdate, _toolCtx) {
 			if (!params.objective.trim()) throw new Error("objective must not be empty");
 
 			const id = generateId();
@@ -1244,7 +1269,7 @@ export default function (pi: ExtensionAPI): void {
 					details: { id, state: entry.state, worktree: entry.worktree, note: "waiting" },
 				});
 				const cap = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_WAIT_TIMEOUT_MS;
-				const result = await awaitChild(entry, cap);
+				const result = await awaitChild(entry, cap, signal);
 				return {
 					content: [{ type: "text", text: formatResultText(result) }],
 					details: result,
@@ -1286,7 +1311,7 @@ export default function (pi: ExtensionAPI): void {
 			all: Type.Optional(Type.Boolean({ description: "Wait for all listed children (true) or the first to settle (false)" })),
 		}),
 
-		async execute(_toolCallId, params, _signal, onUpdate) {
+		async execute(_toolCallId, params, signal, onUpdate) {
 			const ids = Array.from(new Set(params.ids));
 			const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_WAIT_TIMEOUT_MS;
 			const targets = ids
@@ -1303,7 +1328,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			const needsWait = targets.filter((e) => !e.settled);
-			let finished: "done" | "timeout" = "done";
+			let finished: "done" | "timeout" | "aborted" = "done";
 			let timer: NodeJS.Timeout | undefined;
 			let heartbeat: NodeJS.Timeout | undefined;
 
@@ -1324,6 +1349,15 @@ export default function (pi: ExtensionAPI): void {
 					if (remaining === 0) clearInterval(heartbeat);
 				}, 2000);
 
+				// User interrupt (Ctrl+C / esc): stop waiting, leave background
+				// children running — they are managed via /envoy or subagent_cancel.
+				const aborted = new Promise<"aborted">((resolve) => {
+					if (signal) {
+						if (signal.aborted) resolve("aborted");
+						else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+					}
+				});
+
 				try {
 					finished = await Promise.race([
 						(params.all ?? true
@@ -1331,10 +1365,11 @@ export default function (pi: ExtensionAPI): void {
 							: needsWait[0]!.settlePromise
 						).then(() => "done" as const),
 						sleeper,
+						aborted,
 					]);
 				} finally {
-					if (timer) clearTimeout(timer);
-					if (heartbeat) clearInterval(heartbeat);
+					clearTimeout(timer);
+					clearInterval(heartbeat);
 				}
 			}
 
@@ -1346,11 +1381,13 @@ export default function (pi: ExtensionAPI): void {
 					results.push(entry.result);
 				} else {
 					const reason =
-						finished === "timeout"
-							? `wait timed out after ${timeoutMs}ms; child still ${entry.state}`
-							: params.all
-								? `still ${entry.state}`
-								: "not awaited (all=false)";
+						finished === "aborted"
+							? `wait interrupted by user; child left running (${entry.state})`
+							: finished === "timeout"
+								? `wait timed out after ${timeoutMs}ms; child still ${entry.state}`
+								: params.all
+									? `still ${entry.state}`
+									: "not awaited (all=false)";
 					results.push(partialResult(entry, reason));
 				}
 			}
@@ -1358,17 +1395,18 @@ export default function (pi: ExtensionAPI): void {
 			const lines = results.map((r): string => {
 				if (r.state === "unknown") return `${r.id}: unknown to this process`;
 				if (IN_FLIGHT_STATES.includes(r.state)) {
-					return `${r.id}: ${r.state}${r.error ? ` — ${r.error}` : ""}`;
+					return `${r.id} (${r.name}): ${r.state}${r.error ? ` — ${r.error}` : ""}`;
 				}
 				return formatResultText(r);
 			});
+			const head =
+				finished === "aborted"
+					? "wait interrupted by user — background subagents keep running (/envoy to manage)\n"
+					: finished === "timeout"
+						? `wait timed out (${timeoutMs}ms)\n`
+						: "";
 			return {
-				content: [
-					{
-						type: "text",
-						text: finished === "timeout" ? `wait timed out (${timeoutMs}ms)\n${lines.join("\n")}` : lines.join("\n"),
-					},
-				],
+				content: [{ type: "text", text: head + lines.join("\n") }],
 				details: { results },
 			};
 		},
