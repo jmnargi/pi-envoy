@@ -27,7 +27,6 @@ const USAGE = { prompt_tokens: 64, completion_tokens: 16, total_tokens: 80 };
 
 /** The exact subagent_spawn arguments the main session emits on its first turn. */
 const TOOL_ARGS = JSON.stringify({
-	agent: "worker",
 	objective:
 		"Reply with exactly the word OK and nothing else. Do not call any other tools. You may not use the bash tool.",
 	wait: true,
@@ -54,7 +53,8 @@ function textOf(m) {
 function planReply(msgs) {
 	const all = msgs.map(textOf).join("\n");
 	if (all.includes("Delegation Contract")) {
-		return { kind: "text", text: "OK" };
+		// Child pi process: confirm it saw the task subagent prompt, then OK.
+		return { kind: "text", text: all.includes("task subagent") ? "OK" : "MISSING_TASK_PROMPT" };
 	}
 	if (msgs.some((m) => m.role === "tool")) {
 		const ok = all.includes("OK");
@@ -127,7 +127,7 @@ function handleRequest(req, res) {
 		const logEntry = {
 			ts: Date.now(),
 			stream: body.stream === true,
-			msgs: msgs.map((m) => ({ role: m?.role ?? "", content: textOf(m).slice(0, 120) })),
+			msgs: msgs.map((m) => ({ role: m?.role ?? "", content: textOf(m) })),
 		};
 		try {
 			fs.appendFileSync(LOG_URL, `${JSON.stringify(logEntry)}\n`);
